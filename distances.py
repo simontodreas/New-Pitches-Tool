@@ -1,3 +1,10 @@
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import cdist
+import numpy as np
+import pandas as pd
+from scipy import linalg
+
+
 def compute_mahalanobis_distances(df, features, label_cols, min_pitches=None):
     """
     Compute pairwise Mahalanobis distances between pitch types.
