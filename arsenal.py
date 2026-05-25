@@ -2,6 +2,8 @@ import numpy as np
 import itertools
 from scipy.optimize import linear_sum_assignment
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import cdist
 
 # Constants
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
@@ -68,22 +70,24 @@ def compare_all_arsenals(pitch_distances, penalty_pctile):
         .reset_index(drop=True)
     )
 
-
-def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATURES):
+def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATURES, min_pitches=20):
     """
-    For each pitcher, compute the average (and percentiles) of the closest
-    distance from each pitch to any other pitch in their arsenal.
+    For each pitcher-year combination, compute the average (and percentiles) of 
+    the closest distance from each pitch to any other pitch in their arsenal.
     Gives a natural scale for novelty_distance_threshold.
     """
-    rows = []
-    pitchers = pitch_type_summ['player_name'].unique()
+    pitch_type_clean = pitch_type_summ[pitch_type_summ['n'] >= min_pitches]
 
-    for name in pitchers:
+    rows = []
+    grouped = pitch_type_clean.groupby(['player_name', 'pitcher', 'game_year'])
+
+    for (name, id, year), arsenal in grouped:
         arsenal = (
-            pitch_type_summ[pitch_type_summ['player_name'] == name]
+            arsenal
             .dropna(subset=pitch_features)
             .reset_index(drop=True)
         )
+
         if len(arsenal) < 2:
             continue
 
@@ -97,6 +101,8 @@ def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATUR
 
         rows.append({
             'player_name': name,
+            'pitcher': id,
+            'game_year':   year,
             'n_pitches':   len(arsenal),
             'mean_min_dist':   round(min_dists.mean(), 3),
             'min_min_dist':    round(min_dists.min(), 3),
@@ -108,7 +114,7 @@ def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATUR
 
     df = pd.DataFrame(rows).sort_values('mean_min_dist').reset_index(drop=True)
     
-    print("── Arsenal internal distances (across all pitchers) ──")
+    print("── Arsenal internal distances (across all pitcher-years) ──")
     print(df[['mean_min_dist', 'min_min_dist', 'p25_min_dist', 'p50_min_dist', 
               'p75_min_dist', 'p90_min_dist']].describe().round(3).to_string())
     
