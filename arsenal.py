@@ -4,6 +4,7 @@ from scipy.optimize import linear_sum_assignment
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
+from sklearn.metrics import silhouette_samples
 
 # Constants
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
@@ -15,7 +16,8 @@ def compare_all_arsenals(pitch_distances, penalty_pctile):
     Compute pairwise arsenal distances for all pitcher pairs.
 
     Parameters:
-        pitch_distances : long-form DataFrame output from compute_mahalanobis_distances()
+        pitch_distances : long-form DataFrame output from compute_mahalanobis_distances() or 
+                          compute_euclidean_distances() with label_cols=['player_name', 'game_year', 'pitch_type']
         penalty_pctile  : default penalty when the pitchers have different size arsenals
 
     Returns:
@@ -118,4 +120,45 @@ def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATUR
     print(df[['mean_min_dist', 'min_min_dist', 'p25_min_dist', 'p50_min_dist', 
               'p75_min_dist', 'p90_min_dist']].describe().round(3).to_string())
     
+    return df
+
+
+def real_arsenal_silhouette_scores(statcast_clean, min_pitches=20, min_arsenal_size=3):
+    """
+    For each pitcher-year with >= min_arsenal_size pitch types, compute
+    per-cluster silhouette scores using pitch-level data, treating each
+    pitch_type as a cluster label.
+    """
+    rows = []
+
+    eligible = (
+        statcast_clean
+        .dropna(subset=PITCH_CHAR_FEATURES + ['pitch_type'])
+        .groupby(['player_name', 'game_year', 'pitch_type'])
+        .filter(lambda x: len(x) >= min_pitches)
+    )
+
+    grouped = eligible.groupby(['player_name', 'game_year'])
+
+    for (name, year), arsenal in grouped:
+        pitch_types = arsenal['pitch_type'].unique()
+        if len(pitch_types) < min_arsenal_size:
+            continue
+
+        X = StandardScaler().fit_transform(arsenal[PITCH_CHAR_FEATURES].values)
+        labels = arsenal['pitch_type'].values
+        scores = silhouette_samples(X, labels)
+
+        for pt in pitch_types:
+            mask = labels == pt
+            rows.append({
+                'player_name': name,
+                'game_year':   year,
+                'pitch_type':  pt,
+                'sil_score':   scores[mask].mean(),
+            })
+
+    df = pd.DataFrame(rows)
+    print("── Real arsenal silhouette scores ──")
+    print(df['sil_score'].describe(percentiles=[.05, .10, .25, .50]).round(3).to_string())
     return df

@@ -7,6 +7,8 @@ from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+from sklearn.metrics import silhouette_samples
+
 
 # Constants
 BIOMECH_FEATURES    = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
@@ -181,6 +183,27 @@ def suggest_pitches(
     novel = novel.copy().reset_index(drop=True)
     novel['cluster'] = best_labels
 
+    # ── Drop low-cohesion clusters ────────────────────────────────────────────
+    # A cluster with a low mean silhouette score is a catch-all, not a coherent
+    # pitch family. Remove those rows entirely before building suggestions.
+    if best_k > 1:
+        sample_scores = silhouette_samples(X_novel, best_labels)
+        novel['_sil'] = sample_scores
+        cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
+        MIN_CLUSTER_SIL = 0.4         
+        keep_clusters = cluster_mean_sil[cluster_mean_sil >= MIN_CLUSTER_SIL].index
+        novel = novel[novel['cluster'].isin(keep_clusters)].copy()
+        #novel = novel.drop(columns='_sil').reset_index(drop=True)
+
+    if novel.empty:
+        return {
+            'status':         'no_novel_pitches',
+            'target_info':    target_row,
+            'comps':          novel,
+            'suggestions':    pd.DataFrame(),
+            'target_pitches': target_pitches,
+        }
+
     cluster_labels = (
         novel.groupby('cluster')['pitch_type']
         .agg(lambda x: x.value_counts().index[0])
@@ -203,6 +226,7 @@ def suggest_pitches(
             'wavg_release_speed':     round((grp['release_speed'] * grp['sim_weight']).sum() / total_sim, 1),
             'wavg_pfx_x':             round((grp['pfx_x'] * grp['sim_weight']).sum() / total_sim, 2),
             'wavg_pfx_z':             round((grp['pfx_z'] * grp['sim_weight']).sum() / total_sim, 2),
+            '_sil':                   round(grp['_sil'].mean(), 3),
             'pitch_types_in_cluster': ', '.join(sorted(grp['pitch_type'].unique())),
             'comp_pitchers':          ', '.join(sorted(grp['player_name'].unique())),
         })
