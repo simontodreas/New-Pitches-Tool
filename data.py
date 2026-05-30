@@ -224,7 +224,7 @@ def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join, include_he
     pitcher_summ = pitcher_summ.merge(fastball_counts, on=['pitcher', 'game_year'], how='left')
     pitcher_summ['pri_fb_cd'] = (pitcher_summ['pri_fb'] == 'FF').astype(int)
     pitcher_summ = pitcher_summ.merge(
-        spin_df_join, left_on=['pitcher', 'game_year'], right_on=['pitcher', 'year'], how='left'
+        spin_df_join, left_on=['pitcher', 'game_year'], right_on=['pitcher', 'year'], how='inner' # Changed to inner join to ensure we only keep pitchers with spin data
     ).drop(columns='year')
 
     if include_heights:
