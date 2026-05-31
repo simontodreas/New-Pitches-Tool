@@ -72,7 +72,7 @@ def compare_all_arsenals(pitch_distances, penalty_pctile):
         .reset_index(drop=True)
     )
 
-def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATURES, min_pitches=20):
+def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATURES, min_pitches=20, global_scaler=None):
     """
     For each pitcher-year combination, compute the average (and percentiles) of 
     the closest distance from each pitch to any other pitch in their arsenal.
@@ -93,8 +93,10 @@ def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATUR
         if len(arsenal) < 2:
             continue
 
-        scaler = StandardScaler().fit(arsenal[pitch_features])
-        X = scaler.transform(arsenal[pitch_features].values)
+        if global_scaler is not None:
+            X = global_scaler.transform(arsenal[pitch_features].values)
+        else:
+            X = StandardScaler().fit_transform(arsenal[pitch_features].values)
 
         # Distance matrix; set diagonal to inf so a pitch isn't its own closest
         dist_matrix = cdist(X, X, metric='euclidean')

@@ -85,15 +85,14 @@ def _collect_pitches(pitch_type_summ, target_pitcher, target_year, target_dists,
     return target_pitches, comp_pitches
 
 
-def _tag_novelty(target_pitches, comp_pitches, pitch_features, novelty_distance_threshold):
+def _tag_novelty(target_pitches, comp_pitches, pitch_features, novelty_distance_threshold,
+                 global_scaler):
     """
-    Fits a scaler on combined pitches, tags each comp pitch with its minimum distance to
-    any target pitch, and returns (scaler, comp_pitches_with_dist_cols, novel_subset).
+    Uses global_scaler to transform pitches, tags each comp pitch with its minimum distance
+    to any target pitch, and returns (comp_pitches_with_dist_cols, novel_subset).
     """
-    all_pitches = pd.concat([target_pitches, comp_pitches], ignore_index=True)
-    scaler      = StandardScaler().fit(all_pitches[pitch_features])
-    X_target    = scaler.transform(target_pitches[pitch_features].values)
-    X_comp      = scaler.transform(comp_pitches[pitch_features].values)
+    X_target = global_scaler.transform(target_pitches[pitch_features].values)
+    X_comp   = global_scaler.transform(comp_pitches[pitch_features].values)
 
     dist_matrix = cdist(X_comp, X_target, metric='euclidean')
     closest_idx = dist_matrix.argmin(axis=1)
@@ -103,10 +102,10 @@ def _tag_novelty(target_pitches, comp_pitches, pitch_features, novelty_distance_
     comp_pitches['closest_target_pitch'] = target_pitches['pitch_type'].iloc[closest_idx].values
 
     novel = comp_pitches[comp_pitches['min_dist_to_target'] >= novelty_distance_threshold].copy()
-    return scaler, comp_pitches, novel
+    return comp_pitches, novel
 
 
-def _trim_cluster_outliers(novel, X_novel, mad_multiplier=3):
+def _trim_cluster_outliers(novel, X_novel, mask=True, mad_multiplier=3):
     """
     Removes points more than mad_multiplier*MAD from their cluster centroid.
     Writes _dist_to_centroid, _cluster_median_dist, _cluster_mad, _outlier_threshold
@@ -123,21 +122,22 @@ def _trim_cluster_outliers(novel, X_novel, mad_multiplier=3):
     outlier_thresholds = np.empty(len(novel))
 
     for cid in novel['cluster'].unique():
-        mask     = novel['cluster'].values == cid
-        X_clust  = X_novel[mask]
-        centroid = X_clust.mean(axis=0)
-        dists    = np.linalg.norm(X_clust - centroid, axis=1)
-        median_d = np.median(dists)
-        mad      = np.median(np.abs(dists - median_d))
-        threshold = np.max([median_d + mad_multiplier * mad, 1])
-        outliers = dists > threshold
-        if outliers.any():
+        cluster_mask = novel['cluster'].values == cid
+        X_clust      = X_novel[cluster_mask]
+        centroid     = X_clust.mean(axis=0)
+        dists        = np.linalg.norm(X_clust - centroid, axis=1)
+        median_d     = np.median(dists)
+        mad          = np.median(np.abs(dists - median_d))
+        threshold    = np.max([median_d + mad_multiplier * mad, 1])
+        outliers     = dists > threshold
+        if outliers.any() and mask:
             trimmed_any = True
-            keep_mask[np.where(mask)[0][outliers]] = False
-        dist_to_centroid[mask]   = dists
-        cluster_median[mask]     = median_d
-        cluster_mad_vals[mask]   = mad
-        outlier_thresholds[mask] = threshold
+            keep_mask[np.where(cluster_mask)[0][outliers]] = False
+
+        dist_to_centroid[cluster_mask]   = dists
+        cluster_median[cluster_mask]     = median_d
+        cluster_mad_vals[cluster_mask]   = mad
+        outlier_thresholds[cluster_mask] = threshold
 
     novel['_dist_to_centroid']   = dist_to_centroid
     novel['_cluster_median_dist'] = cluster_median
@@ -149,7 +149,7 @@ def _trim_cluster_outliers(novel, X_novel, mad_multiplier=3):
     return novel, X_novel, trimmed_any
 
 
-def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3):
+def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3, mask=True, **kwargs):
     """
     Iteratively clusters novel pitches (best silhouette k), drops low-cohesion clusters,
     and trims centroid outliers until stable. Returns novel with cluster and _sil columns.
@@ -162,24 +162,14 @@ def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3):
         for k in range(2, min(9, len(novel))):
             labels = KMeans(n_clusters=k, random_state=0, n_init='auto').fit_predict(X_novel)
             score  = silhouette_score(X_novel, labels)
+            print(f"Silhouette score for k={k}: {score:.3f}")
             if score > best_score:
                 best_k, best_score, best_labels = k, score, labels
 
-        novel = novel.copy().reset_index(drop=True)
         novel['cluster'] = best_labels
-
-        if best_k > 1:
-            sample_scores    = silhouette_samples(X_novel, best_labels)
-            novel['_sil']    = sample_scores
-            #cluster_mean_sil = novel.groupby('cluster')['_sil'].mean()
-            #keep_clusters    = cluster_mean_sil[cluster_mean_sil >= 0].index
-           # novel = novel[novel['cluster'].isin(keep_clusters)].copy()
-        else:
-            novel['_sil'] = 0.0
-
         novel   = novel.reset_index(drop=True)
         X_novel = scaler.transform(novel[pitch_features].values)
-        novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mad_multiplier)
+        novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mask=mask, mad_multiplier=mad_multiplier)
 
         if not trimmed_any:
             break
@@ -278,8 +268,12 @@ def suggest_pitches(
             'target_pitches': target_pitches,
         }
 
-    scaler, comp_pitches, novel = _tag_novelty(
+    global_scaler = StandardScaler().fit(
+        pitch_type_summ[pitch_features].dropna().values
+    )
+    comp_pitches, novel = _tag_novelty(
         target_pitches, comp_pitches, pitch_features, novelty_distance_threshold,
+        global_scaler,
     )
     if len(novel) < 4:
         return {
@@ -291,7 +285,7 @@ def suggest_pitches(
             'target_pitches': target_pitches,
         }
 
-    novel = _cluster_novel(novel, scaler, pitch_features)
+    novel = _cluster_novel(novel, global_scaler, pitch_features, **kwargs)
     if novel.empty:
         return {
             'status':         'no_novel_pitches',
