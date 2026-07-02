@@ -145,11 +145,35 @@ def _tag_novelty(target_pitches, comp_pitches, pitch_features, novelty_distance_
     return comp_pitches, novel
 
 
-def _trim_cluster_outliers(novel, X_novel, mask=True, mad_multiplier=3):
+def _pick_cluster_threshold(dists, floor):
     """
-    Removes points more than mad_multiplier*MAD from their cluster centroid.
+    Adaptive per-cluster outlier threshold.
+
+    Walks median+3*mad -> median+2*mad -> median+1*mad, taking the first band that is
+    strictly above `floor` AND actually flags at least one point as an outlier. Once a band
+    would fall to/below the floor, the additive cascade stops and the floor itself is used
+    (the floor is a hard minimum radius: points closer than `floor` to the centroid are never
+    trimmed). Returns the chosen threshold.
+    """
+    median_d = np.median(dists)
+    mad      = np.median(np.abs(dists - median_d))
+    for mult in (3, 2, 1):
+        threshold = median_d + mult * mad
+        if threshold <= floor:
+            break                              # this + tighter bands are below the floor
+        if (dists > threshold).any():
+            return threshold                   # most lenient band that flags the worst outliers
+    return floor
+
+
+def _trim_cluster_outliers(novel, X_novel, mask=True, floor=1.2):
+    """
+    Removes points beyond an adaptive per-cluster threshold (see _pick_cluster_threshold):
+    the most lenient of median+{3,2,1}*MAD that stays above `floor` and flags outliers, else
+    the `floor` itself. Because outliers drag the centroid, each call trims the worst outliers
+    and the caller re-centers and re-trims until a pass removes nothing.
     Writes _dist_to_centroid, _cluster_median_dist, _cluster_mad, _outlier_threshold
-    onto novel (surviving rows only) so the caller can inspect and tune mad_multiplier.
+    onto novel (surviving rows only) so the caller can inspect the trimming.
     Returns (novel, X_novel, trimmed_any).
     """
     novel       = novel.copy()
@@ -168,7 +192,7 @@ def _trim_cluster_outliers(novel, X_novel, mask=True, mad_multiplier=3):
         dists        = np.linalg.norm(X_clust - centroid, axis=1)
         median_d     = np.median(dists)
         mad          = np.median(np.abs(dists - median_d))
-        threshold    = np.max([median_d + mad_multiplier * mad, 1])
+        threshold    = _pick_cluster_threshold(dists, floor)
         outliers     = dists > threshold
         if outliers.any() and mask:
             trimmed_any = True
@@ -189,17 +213,18 @@ def _trim_cluster_outliers(novel, X_novel, mask=True, mad_multiplier=3):
     return novel, X_novel, trimmed_any
 
 
-def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3, mask=True, **kwargs):
+def _cluster_novel(novel, scaler, pitch_features, floor=1.2, mask=True, **kwargs):
     """
-    Iteratively clusters novel pitches (best silhouette k), drops low-cohesion clusters,
-    and trims centroid outliers until stable. Returns novel with cluster and _sil columns.
-    mad_multiplier controls the outlier threshold passed to _trim_cluster_outliers.
+    Iteratively clusters novel pitches (best silhouette k) and trims centroid outliers,
+    re-centering after each trim, until a pass removes nothing. Returns novel with cluster
+    and cluster_label columns. `floor` is the hard minimum outlier radius passed to
+    _trim_cluster_outliers.
     """
-    X_novel    = scaler.transform(novel[pitch_features].values)
-    MAX_ITERATIONS = 5
+    X_novel = scaler.transform(novel[pitch_features].values)
+    MAX_ITERATIONS = 25
     for _ in range(MAX_ITERATIONS):
         best_k, best_score, best_labels = 1, -1, np.zeros(len(novel), dtype=int)
-        for k in range(2, min(9, len(novel))):
+        for k in range(2, min(5, len(novel))):
             labels = KMeans(n_clusters=k, random_state=0, n_init='auto').fit_predict(X_novel)
             score  = silhouette_score(X_novel, labels)
             if score > best_score:
@@ -208,7 +233,7 @@ def _cluster_novel(novel, scaler, pitch_features, mad_multiplier=3, mask=True, *
         novel['cluster'] = best_labels
         novel   = novel.reset_index(drop=True)
         X_novel = scaler.transform(novel[pitch_features].values)
-        novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mask=mask, mad_multiplier=mad_multiplier)
+        novel, X_novel, trimmed_any = _trim_cluster_outliers(novel, X_novel, mask=mask, floor=floor)
 
         if not trimmed_any:
             break
