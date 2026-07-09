@@ -19,7 +19,11 @@ st.set_page_config(page_title="MLB Pitch Loadout", layout="wide")
 
 st.markdown("""
 <style>
-.metric-label { font-size: 0.8rem; color: #888; }
+/* Bump the app's base type ~2pt larger. rem-based Streamlit text (titles,
+   captions, widget labels, dataframes) scales with this. The Plotly chart is
+   immune (its text is SVG with explicit px sizes) and the Pitcher Profile panel
+   is pinned in px below, so both keep their current size. */
+html { font-size: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -146,7 +150,21 @@ def _wrap_label(name):
 
 
 def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_suggested=True):
-    comp_pitches   = result['comp_pitches'].reset_index(drop=True)
+    comp_pitches = result.get('comp_pitches')
+    if comp_pitches is None or 'cluster_label' not in comp_pitches.columns:
+        # No-suggestion statuses (no novel pitches / too few to cluster) still
+        # render the plot — existing pitches only.
+        comp_pitches = pd.DataFrame({
+            'cluster_label': pd.Series(dtype=str),
+            'cluster':       pd.Series(dtype=int),
+            'pfx_x':         pd.Series(dtype=float),
+            'pfx_z':         pd.Series(dtype=float),
+            'release_speed': pd.Series(dtype=float),
+            'player_name':   pd.Series(dtype=str),
+            'pitch_type':    pd.Series(dtype=str),
+        })
+    else:
+        comp_pitches = comp_pitches.reset_index(drop=True)
     if not show_suggested:
         # Emptying the frame drops every comp/suggested trace (scatter + centroids)
         # since they are all derived from it.
@@ -172,7 +190,7 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
             x=hb_in(grp['pfx_x']),
             y=vb_in(grp['pfx_z']),
             mode='markers',
-            name=f'Possible Pitch ({_full_name(label)})',
+            name=f'Comparison Pitch ({_full_name(label)})',
             marker=dict(
                 symbol=plotly_markers[i % len(plotly_markers)],
                 size=8,
@@ -186,7 +204,11 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
                     title=dict(text='Velocity (mph)', side='right'),
                     x=1.02,
                     thickness=15,
-                    len=0.75,
+                    # almost the entire bottom half of the right column; the
+                    # legend keeps the space above it
+                    len=0.48,
+                    y=0,
+                    yanchor='bottom',
                 ) if i == 0 else None,
             ),
             customdata=np.column_stack([
@@ -215,7 +237,7 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
             legendgroup='centroid',
             text=[f'<i>{_wrap_label(_full_name(label))}*</i>'],
             textposition=[_label_position(cx, cy)],
-            textfont=dict(size=12, color='#555'),
+            textfont=dict(size=14, color='#555'),
             marker=dict(
                 symbol=plotly_markers[idx % len(plotly_markers)],
                 size=16,
@@ -234,6 +256,10 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
             ),
         ))
 
+    # The first comp trace normally carries the colorbar; the existing-pitch
+    # trace takes it over when no comp traces are drawn.
+    existing_carries_scale = show_suggested is False or comp_pitches.empty
+
     if show_existing and target_pitches is not None and not target_pitches.empty:
         fig.add_trace(go.Scatter(
             x=hb_in(target_pitches['pfx_x']),
@@ -248,19 +274,21 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
                 cmin=vmin,
                 cmax=vmax,
                 line=dict(color='black', width=3),
-                # The first comp trace normally carries the colorbar; take it
-                # over when suggested pitches are hidden.
-                showscale=not show_suggested,
+                showscale=existing_carries_scale,
                 colorbar=dict(
                     title=dict(text='Velocity (mph)', side='right'),
                     x=1.02,
                     thickness=15,
-                    len=0.75,
-                ) if not show_suggested else None,
+                    # almost the entire bottom half of the right column; the
+                    # legend keeps the space above it
+                    len=0.48,
+                    y=0,
+                    yanchor='bottom',
+                ) if existing_carries_scale else None,
             ),
             text=[f'<b>{_wrap_label(_full_name(pt))}</b>' for pt in target_pitches['pitch_type']],
             textposition=[_label_position(x, z) for x, z in zip(hb_in(target_pitches['pfx_x']), vb_in(target_pitches['pfx_z']))],
-            textfont=dict(size=14, color='black'),
+            textfont=dict(size=16, color='black'),
             customdata=np.column_stack([target_pitches['player_name'].values, target_pitches['pitch_type'].map(_full_name).values]),
             hovertemplate=(
                 '<b>%{customdata[0]}</b><br>'
@@ -298,14 +326,16 @@ def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_sug
         range=axis_range, constrain='domain',
     )
     fig.update_layout(
-        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Pitcher View</sup>', x=0.5, xanchor='center'),
+        title=dict(text=f'Potential Arsenal — {pitcher_name}<br><sup>Pitcher View</sup>', x=0.5, xanchor='center', font=dict(size=24)),
         xaxis_title='Horizontal Break (in)',
         yaxis_title='Induced Vertical Break (in)',
-        xaxis=grid_style,
+        # constraintoward='right' packs the square plot against the legend
+        # instead of centering it with dead space on both sides.
+        xaxis=dict(**grid_style, constraintoward='right'),
         yaxis=dict(**grid_style, scaleanchor='x', scaleratio=1),
         dragmode='select',
-        legend=dict(x=1.22, y=1, xanchor='left'),
-        height=560,
+        legend=dict(x=1.02, y=1, xanchor='left', font=dict(size=16)),
+        height=640,
         margin=dict(r=200),
     )
     return fig
@@ -379,27 +409,89 @@ STATUS_MESSAGES = {
 }
 
 if status != 'ok':
-    st.warning(STATUS_MESSAGES.get(status, f"Status: {status}"))
+    _n_novel = len(result.get('comp_pitches', []))
+    if status == 'no_novel_pitches' and _n_novel > 0:
+        # too-few-to-cluster case: novel pitches exist but suggestions need >= 4
+        st.warning(
+            f"Only {_n_novel} novel {'pitch' if _n_novel == 1 else 'pitches'} found — at least 4 "
+            "are needed to cluster into suggestions. See Novel Comparable Pitches below."
+        )
+    else:
+        st.warning(STATUS_MESSAGES.get(status, f"Status: {status}"))
 
-    if result.get('comps') is not None and not result['comps'].empty:
-        with st.expander("Similar Pitchers Found"):
-            st.dataframe(result['comps'], width='stretch')
-    st.stop()
+    # Statuses that still have pitch data render the normal page below the
+    # warning; only statuses with nothing to show stop here.
+    if status not in ('no_novel_pitches', 'no_comp_pitches'):
+        st.stop()
 
 # ── Bio panel | Pitch Plot ────────────────────────────────────────────────────
 info = result['target_info']
-bio_col, plot_col = st.columns([1, 2])
+# Spacer column pushes the chart column right so the square plot (packed
+# against the legend) starts near the column's left edge, keeping the headings
+# above it aligned with the plot.
+bio_col, _gap_col, plot_col = st.columns([1, 0.1, 1.9])
 
 with bio_col:
     st.subheader("Pitcher Profile")
-    st.metric("Season",        int(info['game_year']))
-    st.metric("Throws",        throws)
-    st.metric("Arm Angle",     f"{info['arm_angle']:.1f}°")
-    st.metric("Extension",     f"{info['release_extension']:.2f} ft")
-    st.metric("Max Avg. Velocity", f"{info['max_velo']:.1f} mph")
-    st.metric("Active FB Spin",    f"{info['active_spin_fastball']:.1f}%")
-    st.metric("Total Pitches", f"{int(info['n']):,}")
-    st.metric("Comps Found",   len(result['comps']))
+
+    # MLB static headshot by pitcher id; the d_ param falls back to a generic
+    # silhouette when no photo exists.
+    _headshot = (
+        "https://img.mlbstatic.com/mlb-photos/image/upload/"
+        "d_people:generic:headshot:silo:current.png,q_auto:best,f_auto,w_180/"
+        f"v1/people/{selected_id}/headshot/67/current"
+    )
+    _last, _, _first = str(info['player_name']).partition(', ')
+    _display_name = f"{_first} {_last}".strip()
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; gap:14px; padding:10px 14px;
+                background:#f0efec; border:1px solid rgba(11,11,11,0.10);
+                border-radius:12px; margin-bottom:12px;">
+    <img src="{_headshot}" width="72" alt="{_display_name}"
+        style="border-radius:50%; background:#fcfcfb; border:1px solid rgba(11,11,11,0.10);"/>
+    <div>
+        <div style="font-size:1.15rem; font-weight:700; color:#0b0b0b;">{_display_name}</div>
+        <div style="color:#52514e; font-size:0.9rem;">{throws} &middot; {int(info['game_year'])} Season</div>
+    </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    profile_stats = [
+        ('Arm Angle',         f"{info['arm_angle']:.1f}°"),
+        ('Extension',         f"{info['release_extension']:.2f} ft"),
+        ('Max Avg. Velocity', f"{info['max_velo']:.1f} mph"),
+        ('Active FB Spin',    f"{info['active_spin_fastball']:.1f}%"),
+        ('Total Pitches',     f"{int(info['n']):,}"),
+        ('# Comp Pitchers',   f"{len(result['comps']):,}"),
+    ]
+    # HTML rather than st.dataframe: no height cap (so no scroll) and full
+    # control of text size to fill the column beside the plot.
+    _last_row = len(profile_stats) - 1
+    # Streamlit injects its own CSS into every st.markdown table (margin-bottom
+    # on the table, borders on tr/td, rem-based so it shifts with the html
+    # font-size). Every property it touches is pinned inline here so the card
+    # renders identically regardless of theme or Streamlit version: the trapped
+    # table margin was drawing an empty strip inside the card's bottom edge.
+    # The row and column separators wanted here are re-declared explicitly
+    # after each border:none reset.
+    _stat_rows = ''.join(
+        # Separators sit *below* each row except the last, so the final row's
+        # padding isn't left uncapped (which read as a blank half-row).
+        f'<tr style="border:none;{"" if i == _last_row else " border-bottom:1px solid #d5dbe5;"}">'
+        f'<td style="border:none; border-right:1px solid #d5dbe5; '
+        f'padding:16px 14px; color:#52514e; font-size:24px;">{s}</td>'
+        f'<td style="border:none; padding:16px 14px; text-align:right; font-weight:600; '
+        f'font-size:32px; color:#0b0b0b;">{v}</td></tr>'
+        for i, (s, v) in enumerate(profile_stats)
+    )
+    # No internal newlines/indentation: whitespace text nodes between the tags
+    # otherwise render as an extra blank line box inside the card.
+    st.markdown(
+        '<div style="border:1px solid #d5dbe5; border-radius:8px; background:#fcfcfb; overflow:hidden;">'
+        f'<table style="width:100%; border-collapse:collapse; margin:0; border:none;"><tbody>{_stat_rows}</tbody></table>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 with plot_col:
     st.subheader("Potential Pitch Plot")
@@ -423,62 +515,72 @@ with plot_col:
                 'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d']},
     )
 
-    # ── Arsenal & Suggestions ─────────────────────────────────────────────────
-    st.subheader("Arsenal & Suggestions")
+# ── Arsenal & Suggestions ─────────────────────────────────────────────────
+st.subheader("Arsenal & Suggestions")
 
-    target = result['target_pitches'].copy()
-    total_n = target['n'].sum()
+target = result['target_pitches'].copy()
+total_n = target['n'].sum()
 
-    current_rows = pd.DataFrame({
-        'Pitch':                       target['pitch_type'].map(_full_name).values,
-        'Current Usage':               (target['n'] / total_n).values,
-        'MPH':                         target['release_speed'].values,
-        'Horizontal Break (in)':       hb_in(target['pfx_x'].values),
-        'Induced Vertical Break (in)': vb_in(target['pfx_z'].values),
-        '# Comps':                     np.nan,
-    })
+current_rows = pd.DataFrame({
+    'Pitch':                       target['pitch_type'].map(_full_name).values,
+    'Current Usage':               (target['n'] / total_n).values,
+    'MPH':                         target['release_speed'].values,
+    'Horizontal Break (in)':       hb_in(target['pfx_x'].values),
+    'Induced Vertical Break (in)': vb_in(target['pfx_z'].values),
+    '# Comparison Pitches':        np.nan,
+})
 
-    sugg = result['suggestions']
+sugg = result['suggestions']
+if sugg is None or sugg.empty:
+    # no-suggestion statuses: show the current arsenal alone
+    sugg_rows = current_rows.iloc[0:0].copy()
+else:
     sugg_rows = pd.DataFrame({
-        'Pitch':                       sugg['cluster_label'].values,
+        'Pitch':                       sugg['cluster_label'].values + ' (Suggested)',
         'Current Usage':               np.nan,
         'MPH':                         sugg['wavg_release_speed'].values,
         'Horizontal Break (in)':       hb_in(sugg['wavg_pfx_x'].values),
         'Induced Vertical Break (in)': vb_in(sugg['wavg_pfx_z'].values),
-        '# Comps':                     sugg['n_comps'].values.astype(float),
+        '# Comparison Pitches':        sugg['n_comps'].values.astype(float),
     })
 
-    current_rows['_is_sugg'] = False
-    sugg_rows['_is_sugg']    = True
-    combined = (
-        pd.concat([current_rows, sugg_rows], ignore_index=True)
-        .sort_values(['Current Usage', '# Comps'], ascending=[False, False], na_position='last')
-        .reset_index(drop=True)
-    )
-    sugg_mask = combined['_is_sugg'].tolist()
-    combined = combined.drop(columns='_is_sugg')
+current_rows['_is_sugg'] = False
+sugg_rows['_is_sugg']    = True
+combined = (
+    pd.concat([current_rows, sugg_rows], ignore_index=True)
+    .sort_values(['Current Usage', '# Comparison Pitches'], ascending=[False, False], na_position='last')
+    .reset_index(drop=True)
+)
+sugg_mask = combined['_is_sugg'].tolist()
+combined = combined.drop(columns='_is_sugg')
 
-    def _style_suggestions(df):
-        styles = pd.DataFrame('', index=df.index, columns=df.columns)
-        pitch_col = df.columns.get_loc('Pitch')
-        for i, is_sugg in enumerate(sugg_mask):
-            if is_sugg:
-                styles.iloc[i, pitch_col] = 'font-style: italic'
-        return styles
+# st.dataframe renders null cells as "None" regardless of Styler na_rep, so the
+# NA text has to be baked in as a string before the column reaches the grid.
+combined['# Comparison Pitches'] = combined['# Comparison Pitches'].apply(
+    lambda v: 'NA' if pd.isna(v) else f'{v:.0f}'
+)
 
-    st.dataframe(
-        combined.style
-            .format({
-                'Current Usage':               '{:.1%}',
-                'MPH':                         '{:.1f}',
-                'Horizontal Break (in)':       '{:.1f}',
-                'Induced Vertical Break (in)': '{:.1f}',
-                '# Comps':                     '{:.0f}',
-            }, na_rep='')
-            .apply(_style_suggestions, axis=None),
-        width='stretch',
-        hide_index=True,
-    )
+ARSENAL_SUGG_HL = 'background-color: #dbe8ff'  # highlight for suggested pitches
+
+def _style_arsenal(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    for i, is_sugg in enumerate(sugg_mask):
+        if is_sugg:
+            styles.iloc[i] = ARSENAL_SUGG_HL
+    return styles
+
+st.dataframe(
+    combined.style
+        .format({
+            'Current Usage':               '{:.1%}',
+            'MPH':                         '{:.1f}',
+            'Horizontal Break (in)':       '{:.1f}',
+            'Induced Vertical Break (in)': '{:.1f}',
+        })
+        .apply(_style_arsenal, axis=None),
+    width='stretch',
+    hide_index=True,
+)
 
 st.markdown("---")
 
@@ -496,11 +598,15 @@ selected_pitchers = set(_comp_pitches_indexed.loc[selected_row_ids, 'player_name
 
 SELECT_HL = 'background-color: #fff2a8'  # highlight for plot-selected rows
 
+# Sequential ramp for Biomech Similarity (light -> dark blue).
+from matplotlib.colors import LinearSegmentedColormap
+_SIM_CMAP = LinearSegmentedColormap.from_list('sim_blue', ['#f2f7fd', '#5598e7'])
+
 # ── Detail tables ─────────────────────────────────────────────────────────────
 st.subheader("Comparable Pitchers")
 _sim_cutoff = 100 - _pctile([biomech_thr], biomech_ref)[0]
 st.caption(
-    "Biomech Similarity is a percentile of biomechanical closeness measured against every "
+    "Biomechanical Similarity is a percentile of biomechanical closeness measured against every "
     f"pitcher-season pair league-wide (100 = closest). Only pitchers at or above {_sim_cutoff:.0f} "
     "qualify as comps."
 )
@@ -517,17 +623,17 @@ comps_display = (
     .rename(columns={
         'player_name':          'Pitcher',
         'comp_year':            'Year',
-        'distance':             'Biomech Similarity',
+        'distance':             'Biomechanical Similarity',
         'release_extension':    'Extension (ft)',
         'arm_angle':            'Arm Angle (°)',
         'max_velo':             'Max Avg. Velocity (mph)',
         'active_spin_fastball': 'Fastball Active Spin (%)',
     })
-    [['Pitcher', 'Year', 'Biomech Similarity', 'Extension (ft)', 'Arm Angle (°)',
+    [['Pitcher', 'Year', 'Biomechanical Similarity', 'Extension (ft)', 'Arm Angle (°)',
       'Max Avg. Velocity (mph)', 'Fastball Active Spin (%)']]
 )
 # Distance -> global percentile score (100 = closest pair league-wide).
-comps_display['Biomech Similarity'] = 100 - _pctile(comps_display['Biomech Similarity'], biomech_ref)
+comps_display['Biomechanical Similarity'] = 100 - _pctile(comps_display['Biomechanical Similarity'], biomech_ref)
 
 # Raise plot-selected pitchers to the top (just under the pinned target row).
 if selected_pitchers:
@@ -538,7 +644,7 @@ _ti = result['target_info']
 target_row_df = pd.DataFrame([{
     'Pitcher':                  _ti['player_name'],
     'Year':                     int(_ti['game_year']),
-    'Biomech Similarity':       np.nan,
+    'Biomechanical Similarity': np.nan,
     'Extension (ft)':           _ti['release_extension'],
     'Arm Angle (°)':            _ti['arm_angle'],
     'Max Avg. Velocity (mph)':  _ti['max_velo'],
@@ -558,12 +664,14 @@ st.dataframe(
     comps_display.style
         .format({
             'Year':                     '{:.0f}',
-            'Biomech Similarity':       '{:.0f}',
+            'Biomechanical Similarity': '{:.0f}',
             'Extension (ft)':           '{:.1f}',
             'Arm Angle (°)':            '{:.0f}',
             'Max Avg. Velocity (mph)':  '{:.1f}',
             'Fastball Active Spin (%)': '{:.1f}',
         }, na_rep='')
+        .background_gradient(cmap=_SIM_CMAP, subset=['Biomechanical Similarity'],
+                             vmin=_sim_cutoff, vmax=100)
         .apply(_style_comps, axis=None),
     width='stretch',
     hide_index=True,
@@ -577,9 +685,9 @@ st.caption(
     f"(100 = most novel). Only pitches at or above {_nov_cutoff:.0f} qualify as novel."
 )
 cp = result['comp_pitches'].reset_index(drop=True)
-display_cols = ['player_name', 'game_year', 'pitch_type', 'release_speed',
-                'pfx_x', 'pfx_z', 'usage_pct', 'min_dist_to_target',
-                'closest_target_pitch', 'cluster_label']
+display_cols = ['player_name', 'game_year', 'pitch_type',
+                'usage_pct', 'release_speed', 'pfx_x', 'pfx_z',
+                'cluster_label']
 display_cols = [c for c in display_cols if c in cp.columns]
 cp = cp[display_cols]
 
@@ -588,15 +696,9 @@ if 'pfx_x' in cp.columns:
     cp['pfx_x'] = hb_in(cp['pfx_x'])
 if 'pfx_z' in cp.columns:
     cp['pfx_z'] = vb_in(cp['pfx_z'])
-for _c in ('pitch_type', 'closest_target_pitch', 'cluster_label'):
+for _c in ('pitch_type', 'cluster_label'):
     if _c in cp.columns:
         cp[_c] = cp[_c].map(_full_name)
-if 'cluster_label' in cp.columns:
-    # match the suggested-pitch asterisk convention used in the plot and Arsenal table
-    cp['cluster_label'] = cp['cluster_label'] + '*'
-if 'min_dist_to_target' in cp.columns:
-    # Distance -> global percentile score (100 = most distinct league-wide).
-    cp['min_dist_to_target'] = _pctile(cp['min_dist_to_target'], pitch_ref)
 cp = cp.rename(columns={
     'player_name':          'Pitcher',
     'game_year':            'Year',
@@ -605,9 +707,7 @@ cp = cp.rename(columns={
     'pfx_x':                'Horizontal Break (in)',
     'pfx_z':                'Induced Vertical Break (in)',
     'usage_pct':            'Usage',
-    'min_dist_to_target':   'Novelty Score',
-    'closest_target_pitch': 'Closest Existing Pitch',
-    'cluster_label':        'Pitch Cluster',
+    'cluster_label':        'Suggested Pitch',
 })
 
 # Raise the exact plot-selected pitch rows to the top (row ids align with cp's index).
@@ -632,13 +732,15 @@ _novel_formats = {
     'Horizontal Break (in)':       '{:.1f}',
     'Induced Vertical Break (in)': '{:.1f}',
     'Usage':                       '{:.1%}',
-    'Novelty Score':               '{:.0f}',
 }
-st.dataframe(
-    cp.style
-        .format({k: v for k, v in _novel_formats.items() if k in cp.columns}, na_rep='')
-        .apply(_style_novel, axis=None),
-    width='stretch',
-    hide_index=True,
-)
+if cp.empty:
+    st.info("No novel comparable pitches to display for this pitcher.")
+else:
+    st.dataframe(
+        cp.style
+            .format({k: v for k, v in _novel_formats.items() if k in cp.columns}, na_rep='')
+            .apply(_style_novel, axis=None),
+        width='stretch',
+        hide_index=True,
+    )
 

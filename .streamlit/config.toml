@@ -1,0 +1,12 @@
+[theme]
+base = "light"
+primaryColor = "#2a78d6"                    # interactive accents: focus rings, selected controls
+backgroundColor = "#f9f9f7"                 # warm paper page
+secondaryBackgroundColor = "#e9eef6"        # cool blue-gray inputs and widget chrome
+textColor = "#0b0b0b"
+linkColor = "#1c5cab"
+borderColor = "#d5dbe5"
+dataframeBorderColor = "#d5dbe5"
+dataframeHeaderBackgroundColor = "#e9eef6"  # tinted table headers
+baseRadius = "medium"
+font = "sans serif"

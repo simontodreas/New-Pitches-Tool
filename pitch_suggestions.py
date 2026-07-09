@@ -277,7 +277,7 @@ def _build_suggestions(novel, target_dists):
         .sort_values('n_comps', ascending=False)
         .reset_index(drop=True)
     )
-    result['cluster_label'] = result['cluster_label'].apply(lambda x: _full_name(x) + '*')
+    result['cluster_label'] = result['cluster_label'].apply(lambda x: _full_name(x))
     return result
 
 
@@ -356,7 +356,8 @@ def suggest_pitches(
         return {
             'status':         'no_novel_pitches',
             'target_info':    target_row,
-            'comps':          novel,
+            'comps':          target_dists,
+            'comp_pitches':   novel,
             'suggestions':    pd.DataFrame(),
             'target_pitches': target_pitches,
         }
