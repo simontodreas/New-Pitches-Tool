@@ -6,12 +6,16 @@ import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 
-from pitch_suggestions import suggest_pitches, _full_name, BIOMECH_FEATURES, hb_in, vb_in
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import cdist
+
+from pitch_suggestions import (suggest_pitches, _full_name, BIOMECH_FEATURES,
+                               PITCH_CHAR_FEATURES, hb_in, vb_in)
 
 SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
 
-st.set_page_config(page_title="Pitch Suggestions", layout="wide")
+st.set_page_config(page_title="MLB Pitch Loadout", layout="wide")
 
 st.markdown("""
 <style>
@@ -31,10 +35,15 @@ def load_data():
 
 
 @st.cache_data(show_spinner=False)
-def run_suggest(pitcher_id, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches):
+def run_suggest(pitcher_id, is_righty, season, biomech_thr, novelty_thr, min_usage, min_pitches):
     data = load_data()
     pitcher_summ   = data['pitcher_summ_r']  if is_righty else data['pitcher_summ_l']
     pitch_type_summ = data['pitch_type_r']   if is_righty else data['pitch_type_l']
+    # Restrict both pools to the selected season and earlier, so a 2025 query never pulls
+    # comps or pitches from a later season. _find_target anchors on the most recent year
+    # remaining in the pool, so this also makes the target season resolve to `season`.
+    pitcher_summ    = pitcher_summ[pitcher_summ['game_year'] <= season]
+    pitch_type_summ = pitch_type_summ[pitch_type_summ['game_year'] <= season]
     return suggest_pitches(
         target_pitcher_id=pitcher_id,
         pitcher_summ=pitcher_summ,
@@ -43,7 +52,70 @@ def run_suggest(pitcher_id, is_righty, biomech_thr, novelty_thr, min_usage, min_
         novelty_distance_threshold=novelty_thr,
         min_comp_usage_pct=min_usage,
         min_pitches=min_pitches,
+        mask=True
     )
+
+
+@st.cache_data(show_spinner="Calibrating similarity scales...")
+def distance_percentile_refs(min_pitches):
+    """Global reference distributions (quantile grids) for the two distance scores.
+
+    Built from ALL pairs league-wide — including pitchers and pitches that fail
+    the comp/novelty cutoffs — so a percentile reads against the full population,
+    not just the pre-filtered survivors.
+    """
+    data = load_data()
+    q = np.linspace(0, 1, 10001)
+
+    # Biomech: every pitcher-season pair, per hand (comps only ever come from
+    # the same-handed pool), z-scored the same way _find_biomech_comps does.
+    biomech_dists = []
+    for k in ('pitcher_summ_r', 'pitcher_summ_l'):
+        pool = data[k]
+        pool = pool[pool['n'] >= min_pitches].dropna(subset=BIOMECH_FEATURES)
+        X = StandardScaler().fit_transform(pool[BIOMECH_FEATURES].values)
+        dm = cdist(X, X)
+        biomech_dists.append(dm[np.triu_indices(len(X), k=1)])
+    biomech_ref = np.quantile(np.concatenate(biomech_dists), q)
+
+    # Novelty: the displayed statistic is a pitch's distance to the NEAREST pitch
+    # in the target's arsenal, so the reference must be that same statistic
+    # league-wide — pitch -> nearest pitch of another pitcher's arsenal — not raw
+    # pairwise gaps (which cross-type gaps like FF-vs-CU would inflate). Sampled
+    # with a fixed seed for tractability.
+    rng = np.random.default_rng(0)
+    pitch_dists = []
+    for k in ('pitch_type_r', 'pitch_type_l'):
+        pool = data[k].dropna(subset=PITCH_CHAR_FEATURES).reset_index(drop=True)
+        X = StandardScaler().fit_transform(pool[PITCH_CHAR_FEATURES].values)
+        codes = pd.factorize(pool['pitcher'].astype(str) + '_' + pool['game_year'].astype(str))[0]
+
+        q_idx = rng.choice(len(X), size=min(3000, len(X)), replace=False)
+        arsenals = rng.choice(np.unique(codes), size=min(400, codes.max() + 1), replace=False)
+
+        a_mask  = np.isin(codes, arsenals)
+        order   = np.argsort(codes[a_mask], kind='stable')
+        Xa      = X[a_mask][order]
+        a_codes = codes[a_mask][order]
+        starts  = np.flatnonzero(np.r_[True, a_codes[1:] != a_codes[:-1]])
+
+        # min distance from each query pitch to each sampled arsenal
+        mins = np.minimum.reduceat(cdist(X[q_idx], Xa), starts, axis=1)
+
+        # a pitch is trivially 0 away from its own arsenal; mask those cells
+        col_of_code = {c: i for i, c in enumerate(a_codes[starts])}
+        for row, qc in enumerate(codes[q_idx]):
+            if qc in col_of_code:
+                mins[row, col_of_code[qc]] = np.nan
+        pitch_dists.append(mins[~np.isnan(mins)])
+    pitch_ref = np.quantile(np.concatenate(pitch_dists), q)
+
+    return biomech_ref, pitch_ref
+
+
+def _pctile(values, ref):
+    """Percentile (0-100) of each value within a quantile-grid reference."""
+    return np.searchsorted(ref, np.asarray(values, dtype=float)) / (len(ref) - 1) * 100
 
 
 def _label_position(x, z, limit=25.2, margin=7.2):
@@ -73,8 +145,12 @@ def _wrap_label(name):
     return name[:split] + '<br>' + name[split + 1:]
 
 
-def make_cluster_fig(result, is_righty):
+def make_cluster_fig(result, is_righty, vmin, vmax, show_existing=True, show_suggested=True):
     comp_pitches   = result['comp_pitches'].reset_index(drop=True)
+    if not show_suggested:
+        # Emptying the frame drops every comp/suggested trace (scatter + centroids)
+        # since they are all derived from it.
+        comp_pitches = comp_pitches.iloc[0:0]
     target_pitches = result['target_pitches']
     pitcher_name   = target_pitches['player_name'].iloc[0]
 
@@ -87,9 +163,6 @@ def make_cluster_fig(result, is_righty):
 
     arm_angle_deg  = result['target_info']['arm_angle']
     arm_angle_rad  = np.radians(arm_angle_deg)
-
-    vmin = comp_pitches['release_speed'].min()
-    vmax = comp_pitches['release_speed'].max()
 
     fig = go.Figure()
 
@@ -132,13 +205,17 @@ def make_cluster_fig(result, is_righty):
     for _, row in centroids.iterrows():
         idx = cluster_key_index.get((row['cluster_label'], row['cluster']), 0)
         label = row['cluster_label']
+        cx, cy = hb_in(row['pfx_x']), vb_in(row['pfx_z'])
         fig.add_trace(go.Scatter(
-            x=[hb_in(row['pfx_x'])],
-            y=[vb_in(row['pfx_z'])],
-            mode='markers',
-            name='Cluster Centroid',
+            x=[cx],
+            y=[cy],
+            mode='markers+text',
+            name='Suggested Pitch',
             showlegend=(idx == 0),
             legendgroup='centroid',
+            text=[f'<i>{_wrap_label(_full_name(label))}*</i>'],
+            textposition=[_label_position(cx, cy)],
+            textfont=dict(size=12, color='#555'),
             marker=dict(
                 symbol=plotly_markers[idx % len(plotly_markers)],
                 size=16,
@@ -150,21 +227,38 @@ def make_cluster_fig(result, is_righty):
                 showscale=False,
             ),
             hovertemplate=(
-                f'<b>Centroid: {_full_name(label)}</b><br>'
+                f'<b>Suggested: {_full_name(label)}</b><br>'
                 'HBreak: %{x:.1f} in<br>'
                 'IVBreak: %{y:.1f} in'
                 '<extra></extra>'
             ),
         ))
 
-    if target_pitches is not None and not target_pitches.empty:
+    if show_existing and target_pitches is not None and not target_pitches.empty:
         fig.add_trace(go.Scatter(
             x=hb_in(target_pitches['pfx_x']),
             y=vb_in(target_pitches['pfx_z']),
             mode='markers+text',
             name='Existing Pitch',
-            marker=dict(symbol='diamond', size=16, color='black'),
-            text=[_wrap_label(_full_name(pt)) for pt in target_pitches['pitch_type']],
+            marker=dict(
+                symbol='diamond',
+                size=18,
+                color=target_pitches['release_speed'],
+                colorscale='plasma',
+                cmin=vmin,
+                cmax=vmax,
+                line=dict(color='black', width=3),
+                # The first comp trace normally carries the colorbar; take it
+                # over when suggested pitches are hidden.
+                showscale=not show_suggested,
+                colorbar=dict(
+                    title=dict(text='Velocity (mph)', side='right'),
+                    x=1.02,
+                    thickness=15,
+                    len=0.75,
+                ) if not show_suggested else None,
+            ),
+            text=[f'<b>{_wrap_label(_full_name(pt))}</b>' for pt in target_pitches['pitch_type']],
             textposition=[_label_position(x, z) for x, z in zip(hb_in(target_pitches['pfx_x']), vb_in(target_pitches['pfx_z']))],
             textfont=dict(size=14, color='black'),
             customdata=np.column_stack([target_pitches['player_name'].values, target_pitches['pitch_type'].map(_full_name).values]),
@@ -224,50 +318,64 @@ with st.spinner("Loading data..."):
 pitcher_summ_r = data['pitcher_summ_r']
 pitcher_summ_l = data['pitcher_summ_l']
 
+# Global velocity color band: every pitcher's plot uses the same top and bottom
+# of the scale, so colors are comparable across pitchers.
+_all_speeds = pd.concat([data['pitch_type_r']['release_speed'], data['pitch_type_l']['release_speed']])
+VELO_MIN, VELO_MAX = float(_all_speeds.min()), float(_all_speeds.max())
+
 # Search is by name, but identity is the `pitcher` id. Build label -> (id, is_righty)
-# options from the 2025 pool, disambiguating duplicate names by id.
+# options from the selectable seasons, disambiguating duplicate names by id.
+SEASONS = [2025, 2026]
 _pool = pd.concat([
-    pitcher_summ_r[pitcher_summ_r['game_year'] == 2025][['pitcher', 'player_name']].assign(is_righty=True),
-    pitcher_summ_l[pitcher_summ_l['game_year'] == 2025][['pitcher', 'player_name']].assign(is_righty=False),
-], ignore_index=True).drop_duplicates(subset='pitcher')
-_name_counts = _pool['player_name'].value_counts()
+    pitcher_summ_r[pitcher_summ_r['game_year'].isin(SEASONS)][['pitcher', 'player_name', 'game_year']].assign(is_righty=True),
+    pitcher_summ_l[pitcher_summ_l['game_year'].isin(SEASONS)][['pitcher', 'player_name', 'game_year']].assign(is_righty=False),
+], ignore_index=True)
+# Seasons each pitcher actually appears in, so the year selector only offers valid years.
+pitcher_seasons = _pool.groupby('pitcher')['game_year'].apply(lambda s: sorted(s.unique())).to_dict()
+
+_ids = _pool.drop_duplicates(subset='pitcher')
+_name_counts = _ids['player_name'].value_counts()
 pitcher_options = {
     (row['player_name'] if _name_counts[row['player_name']] == 1 else f"{row['player_name']} (id {row['pitcher']})"):
         (int(row['pitcher']), bool(row['is_righty']))
-    for _, row in _pool.iterrows()
+    for _, row in _ids.iterrows()
 }
 all_pitchers = sorted(pitcher_options)
 
-# ── Pitcher selector (top of page) ───────────────────────────────────────────
-st.title("Pitch Suggestions")
-selected = st.selectbox("Select Pitcher", all_pitchers, placeholder="Search for a pitcher…")
+# ── Pitcher & season selectors (top of page) ─────────────────────────────────
+st.title("MLB Pitch Loadout")
+sel_col, yr_col = st.columns([3, 1])
+with sel_col:
+    selected = st.selectbox("Select Pitcher", all_pitchers, placeholder="Search for a pitcher…")
 selected_id, is_righty = pitcher_options[selected]
 
-# ── Sidebar parameters ────────────────────────────────────────────────────────
-st.sidebar.subheader("Parameters")
+# Only offer the seasons this pitcher actually appears in; default to the most recent.
+avail_seasons = pitcher_seasons.get(selected_id, SEASONS)
+with yr_col:
+    season = st.selectbox("Season", avail_seasons, index=len(avail_seasons) - 1)
 
-biomech_thr  = st.sidebar.slider("Biomech Distance Threshold",  0.5, 3.0, 1.5, 0.1,
-                                  help="Max biomechanical distance to qualify as a comp")
-novelty_thr  = st.sidebar.slider("Novelty Distance Threshold",  0.5, 3.0, 1.2, 0.1,
-                                  help="Min pitch-char distance to count as novel vs. target")
-min_usage    = st.sidebar.slider("Min Comp Usage %",            0.01, 0.10, 0.01, 0.01,
-                                  help="Minimum usage share a comp pitch must have")
-min_pitches  = st.sidebar.slider("Min Pitches",                 10, 50, 20, 5,
-                                  help="Minimum pitch count to include a pitcher")
+# ── Analysis parameters (fixed) ───────────────────────────────────────────────
+biomech_thr  = 1.5   # max biomechanical distance to qualify as a comp
+novelty_thr  = 1.2   # min pitch-char distance to count as novel vs. target
+min_usage    = 0.01  # minimum usage share a comp pitch must have
+min_pitches  = 20    # minimum pitch count to include a pitcher
+
+# Global percentile scales for displaying the raw distances as 0-100 scores.
+biomech_ref, pitch_ref = distance_percentile_refs(min_pitches)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 throws = "RHP" if is_righty else "LHP"
 
 with st.spinner("Running analysis..."):
-    result = run_suggest(selected_id, is_righty, biomech_thr, novelty_thr, min_usage, min_pitches)
+    result = run_suggest(selected_id, is_righty, season, biomech_thr, novelty_thr, min_usage, min_pitches)
 
 status = result['status']
 
 STATUS_MESSAGES = {
     'pitcher_not_found': "Pitcher not found in the dataset.",
-    'no_comps':          "No biomechanically similar comps found. Try raising the Biomech Distance Threshold.",
-    'no_comp_pitches':   "Comps found but no usable pitch data. Try lowering Min Comp Usage % or Min Pitches.",
-    'no_novel_pitches':  "No novel pitches found. Try raising the Novelty Distance Threshold.",
+    'no_comps':          "No biomechanically similar comps found for this pitcher.",
+    'no_comp_pitches':   "Comps found but no usable pitch data.",
+    'no_novel_pitches':  "No novel pitches found for this pitcher.",
 }
 
 if status != 'ok':
@@ -275,7 +383,7 @@ if status != 'ok':
 
     if result.get('comps') is not None and not result['comps'].empty:
         with st.expander("Similar Pitchers Found"):
-            st.dataframe(result['comps'], use_container_width=True)
+            st.dataframe(result['comps'], width='stretch')
     st.stop()
 
 # ── Bio panel | Pitch Plot ────────────────────────────────────────────────────
@@ -288,22 +396,29 @@ with bio_col:
     st.metric("Throws",        throws)
     st.metric("Arm Angle",     f"{info['arm_angle']:.1f}°")
     st.metric("Extension",     f"{info['release_extension']:.2f} ft")
-    st.metric("Max Velocity",  f"{info['max_velo']:.1f} mph")
-    st.metric("Primary FB",    info.get('pri_fb', 'N/A'))
-    st.metric("Active Spin",   f"{info['active_spin_fastball']:.1f}%")
+    st.metric("Max Avg. Velocity", f"{info['max_velo']:.1f} mph")
+    st.metric("Active FB Spin",    f"{info['active_spin_fastball']:.1f}%")
     st.metric("Total Pitches", f"{int(info['n']):,}")
     st.metric("Comps Found",   len(result['comps']))
 
 with plot_col:
     st.subheader("Potential Pitch Plot")
+    view_mode = st.segmented_control(
+        "Pitch filter",
+        ["Both", "Existing Only", "Recommended Only"],
+        default="Both",
+        label_visibility="collapsed",
+    ) or "Both"  # deselecting the control returns None; treat it as Both
+    show_existing  = view_mode != "Recommended Only"
+    show_suggested = view_mode != "Existing Only"
     st.caption("Click, box-, or lasso-select pitches to highlight them in the tables below.")
-    fig = make_cluster_fig(result, is_righty)
+    fig = make_cluster_fig(result, is_righty, VELO_MIN, VELO_MAX, show_existing, show_suggested)
     plot_event = st.plotly_chart(
         fig,
-        use_container_width=True,
+        width='stretch',
         on_select="rerun",
         selection_mode=("points", "box", "lasso"),
-        key=f"pitch_plot_{selected}",
+        key=f"pitch_plot_{selected}_{view_mode}",
         config={'scrollZoom': False, 'displayModeBar': True,
                 'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d']},
     )
@@ -361,7 +476,7 @@ with plot_col:
                 '# Comps':                     '{:.0f}',
             }, na_rep='')
             .apply(_style_suggestions, axis=None),
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
     )
 
@@ -382,7 +497,13 @@ selected_pitchers = set(_comp_pitches_indexed.loc[selected_row_ids, 'player_name
 SELECT_HL = 'background-color: #fff2a8'  # highlight for plot-selected rows
 
 # ── Detail tables ─────────────────────────────────────────────────────────────
-st.subheader("Comp Pitchers")
+st.subheader("Comparable Pitchers")
+_sim_cutoff = 100 - _pctile([biomech_thr], biomech_ref)[0]
+st.caption(
+    "Biomech Similarity is a percentile of biomechanical closeness measured against every "
+    f"pitcher-season pair league-wide (100 = closest). Only pitchers at or above {_sim_cutoff:.0f} "
+    "qualify as comps."
+)
 pitcher_summ = data['pitcher_summ_r'] if is_righty else data['pitcher_summ_l']
 # comp_pitcher is a pitcher id; join on it to recover the display name + biomech features.
 comps_display = (
@@ -396,15 +517,17 @@ comps_display = (
     .rename(columns={
         'player_name':          'Pitcher',
         'comp_year':            'Year',
-        'distance':             'Biomech Distance',
+        'distance':             'Biomech Similarity',
         'release_extension':    'Extension (ft)',
         'arm_angle':            'Arm Angle (°)',
-        'max_velo':             'Max Velo (mph)',
+        'max_velo':             'Max Avg. Velocity (mph)',
         'active_spin_fastball': 'Fastball Active Spin (%)',
     })
-    [['Pitcher', 'Year', 'Biomech Distance', 'Extension (ft)', 'Arm Angle (°)',
-      'Max Velo (mph)', 'Fastball Active Spin (%)']]
+    [['Pitcher', 'Year', 'Biomech Similarity', 'Extension (ft)', 'Arm Angle (°)',
+      'Max Avg. Velocity (mph)', 'Fastball Active Spin (%)']]
 )
+# Distance -> global percentile score (100 = closest pair league-wide).
+comps_display['Biomech Similarity'] = 100 - _pctile(comps_display['Biomech Similarity'], biomech_ref)
 
 # Raise plot-selected pitchers to the top (just under the pinned target row).
 if selected_pitchers:
@@ -415,10 +538,10 @@ _ti = result['target_info']
 target_row_df = pd.DataFrame([{
     'Pitcher':                  _ti['player_name'],
     'Year':                     int(_ti['game_year']),
-    'Biomech Distance':         np.nan,
+    'Biomech Similarity':       np.nan,
     'Extension (ft)':           _ti['release_extension'],
     'Arm Angle (°)':            _ti['arm_angle'],
-    'Max Velo (mph)':           _ti['max_velo'],
+    'Max Avg. Velocity (mph)':  _ti['max_velo'],
     'Fastball Active Spin (%)': _ti['active_spin_fastball'],
 }])
 comps_display = pd.concat([target_row_df, comps_display], ignore_index=True)
@@ -435,24 +558,57 @@ st.dataframe(
     comps_display.style
         .format({
             'Year':                     '{:.0f}',
-            'Biomech Distance':         '{:.3f}',
+            'Biomech Similarity':       '{:.0f}',
             'Extension (ft)':           '{:.1f}',
             'Arm Angle (°)':            '{:.0f}',
-            'Max Velo (mph)':           '{:.1f}',
+            'Max Avg. Velocity (mph)':  '{:.1f}',
             'Fastball Active Spin (%)': '{:.1f}',
         }, na_rep='')
         .apply(_style_comps, axis=None),
-    use_container_width=True,
+    width='stretch',
     hide_index=True,
 )
 
-st.subheader("Novel Comp Pitches")
+st.subheader("Novel Comparable Pitches")
+_nov_cutoff = _pctile([novelty_thr], pitch_ref)[0]
+st.caption(
+    "Novelty Score is the percentile of a pitch's distance from the nearest pitch in the current "
+    "arsenal, measured against how far pitches league-wide sit from other pitchers' arsenals "
+    f"(100 = most novel). Only pitches at or above {_nov_cutoff:.0f} qualify as novel."
+)
 cp = result['comp_pitches'].reset_index(drop=True)
 display_cols = ['player_name', 'game_year', 'pitch_type', 'release_speed',
                 'pfx_x', 'pfx_z', 'usage_pct', 'min_dist_to_target',
-                'closest_target_pitch', 'cluster_label', 'biomech_distance']
+                'closest_target_pitch', 'cluster_label']
 display_cols = [c for c in display_cols if c in cp.columns]
 cp = cp[display_cols]
+
+# Show breaks in inches (pitcher's view) and pitch codes as full names, matching the plot.
+if 'pfx_x' in cp.columns:
+    cp['pfx_x'] = hb_in(cp['pfx_x'])
+if 'pfx_z' in cp.columns:
+    cp['pfx_z'] = vb_in(cp['pfx_z'])
+for _c in ('pitch_type', 'closest_target_pitch', 'cluster_label'):
+    if _c in cp.columns:
+        cp[_c] = cp[_c].map(_full_name)
+if 'cluster_label' in cp.columns:
+    # match the suggested-pitch asterisk convention used in the plot and Arsenal table
+    cp['cluster_label'] = cp['cluster_label'] + '*'
+if 'min_dist_to_target' in cp.columns:
+    # Distance -> global percentile score (100 = most distinct league-wide).
+    cp['min_dist_to_target'] = _pctile(cp['min_dist_to_target'], pitch_ref)
+cp = cp.rename(columns={
+    'player_name':          'Pitcher',
+    'game_year':            'Year',
+    'pitch_type':           'Pitch',
+    'release_speed':        'Velocity (mph)',
+    'pfx_x':                'Horizontal Break (in)',
+    'pfx_z':                'Induced Vertical Break (in)',
+    'usage_pct':            'Usage',
+    'min_dist_to_target':   'Novelty Score',
+    'closest_target_pitch': 'Closest Existing Pitch',
+    'cluster_label':        'Pitch Cluster',
+})
 
 # Raise the exact plot-selected pitch rows to the top (row ids align with cp's index).
 if selected_row_ids:
@@ -470,9 +626,19 @@ def _style_novel(df):
             styles.iloc[i] = SELECT_HL
     return styles
 
+_novel_formats = {
+    'Year':                        '{:.0f}',
+    'Velocity (mph)':              '{:.1f}',
+    'Horizontal Break (in)':       '{:.1f}',
+    'Induced Vertical Break (in)': '{:.1f}',
+    'Usage':                       '{:.1%}',
+    'Novelty Score':               '{:.0f}',
+}
 st.dataframe(
-    cp.style.apply(_style_novel, axis=None),
-    use_container_width=True,
+    cp.style
+        .format({k: v for k, v in _novel_formats.items() if k in cp.columns}, na_rep='')
+        .apply(_style_novel, axis=None),
+    width='stretch',
     hide_index=True,
 )
 
