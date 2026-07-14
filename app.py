@@ -247,8 +247,8 @@ with bio_col:
     """, unsafe_allow_html=True)
 
     profile_stats = [
-        ('Arm Angle',         f"{info['arm_angle']:.1f}°"),
-        ('Extension',         f"{info['release_extension']:.2f} ft"),
+        ('Arm Angle',         f"{info['arm_angle']:.0f}°"),
+        ('Extension',         f"{info['release_extension']:.1f} ft"),
         ('Max Avg. Velocity', f"{info['max_velo']:.1f} mph"),
         ('Active FB Spin',    f"{info['active_spin_fastball']:.1f}%"),
         ('Total Pitches',     f"{int(info['n']):,}"),
@@ -287,11 +287,11 @@ with plot_col:
     st.subheader("Potential Pitch Plot")
     view_mode = st.segmented_control(
         "Pitch filter",
-        ["Both", "Existing Only", "Recommended Only"],
+        ["Both", "Existing Only", "Suggested Only"],
         default="Both",
         label_visibility="collapsed",
     ) or "Both"  # deselecting the control returns None; treat it as Both
-    show_existing  = view_mode != "Recommended Only"
+    show_existing  = view_mode != "Suggested Only"
     show_suggested = view_mode != "Existing Only"
     st.caption("Click, box-, or lasso-select pitches to highlight them in the tables below.")
     fig = make_cluster_fig(result, is_righty, VELO_MIN, VELO_MAX, show_existing, show_suggested)
@@ -468,12 +468,6 @@ st.dataframe(
 )
 
 st.subheader("Novel Comparable Pitches")
-_nov_cutoff = _pctile([novelty_thr], pitch_ref)[0]
-st.caption(
-    "Novelty Score is the percentile of a pitch's distance from the nearest pitch in the current "
-    "arsenal, measured against how far pitches league-wide sit from other pitchers' arsenals "
-    f"(100 = most novel). Only pitches at or above {_nov_cutoff:.0f} qualify as novel."
-)
 cp = result['comp_pitches'].reset_index(drop=True)
 display_cols = ['player_name', 'game_year', 'pitch_type',
                 'usage_pct', 'release_speed', 'pfx_x', 'pfx_z',
