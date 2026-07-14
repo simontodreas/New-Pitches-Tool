@@ -1,8 +1,23 @@
 # MLB Pitch Loadout
 
-A Streamlit app that suggests new pitches for MLB pitchers by finding
-biomechanically similar comps and surfacing pitches those comps throw that the
-target pitcher doesn't.
+**Try the app: [link coming soon — deploys via Streamlit Community Cloud]**
+
+The goal of MLB Pitch Loadout is to provide MLB pitchers with reasonable suggestions for new pitches. The approach to this centers on identifying other pitchers with similar mechanics and selecting pitches they throw that our target pitcher does not. The theory is simple: two pitchers with a similar pitching process should have similar results, specifically, a similar arsenal.
+
+![MLB Pitch Loadout screenshot](docs/screenshot.png)
+
+## How it works
+
+1. The user selects a target pitcher.
+2. The app identifies a comparison group of biomechanically similar pitchers.
+3. Pitches thrown by anyone in the comparison group that are distinct from every pitch in the target pitcher’s arsenal are isolated. These are called novel pitches.
+4. K-Means clustering is run on the novel pitches to define pitch types. The best silhouette score between k=2 and k=4 defines the optimal k.
+5. Outlier novel pitches are removed.
+6. Steps 4 and 5 repeat until there are no more outliers.
+7. The clusters of novel pitches are named for their most common pitch type, and the user sees this as suggested pitches for the pitcher
+
+Data: 2021–2026 Statcast pitch data plus Baseball Savant's active-spin
+leaderboards.
 
 ## Running locally
 
@@ -11,41 +26,20 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app reads its data from the Parquet snapshots in `snapshots/`, which are
-committed to the repo — no raw data files are needed to run it.
-
-## Deploying (Streamlit Community Cloud)
-
-1. Push this repo to GitHub.
-2. Go to https://share.streamlit.io, click **Create app**, and point it at
-   this repo with `app.py` as the entrypoint.
-3. Done — the app redeploys automatically on every push to the branch you
-   selected.
-
-## Refreshing the data
-
-The published app is static: it shows whatever is in `snapshots/` at deploy
-time. To refresh:
-
-1. Update the raw Statcast CSVs (paths are set in `STATCAST_PATHS` in
-   `data.py`), e.g. via `pybaseball`.
-2. Refresh the spin leaderboard files (downloads from Baseball Savant):
-   ```bash
-   python -c "from data import download_spin_files; download_spin_files()"
-   ```
-3. Rebuild the snapshots and push:
-   ```bash
-   python snapshot.py
-   git add snapshots && git commit -m "refresh data" && git push
-   ```
+The app reads only the prebuilt Parquet snapshots in `data/snapshots/`
+(committed to the repo), so no raw data downloads are needed to run it.
 
 ## Repo layout
 
-- `app.py` — the Streamlit app (reads only `snapshots/*.parquet`)
-- `pitch_suggestions.py`, `distances.py` — similarity + suggestion pipeline
-- `data.py` — raw-data loading/cleaning pipeline (only needed to rebuild snapshots)
-- `snapshot.py` — rebuilds `snapshots/*.parquet` from the raw data
-- `arsenal.py`, `biomech.py`, `stability.py`, `validation.py` — analysis modules
-  used by the notebooks
-- `Spin Files/` — Baseball Savant active-spin leaderboard exports (inputs to
-  the snapshot build)
+| Path | What it is |
+|---|---|
+| `app.py` | The Streamlit app (entrypoint) |
+| `src/` | Code behind the app: similarity + suggestion pipeline (`pitch_suggestions.py`, `distances.py`) and the data build (`data.py`, `snapshot.py`) |
+| `analysis/` | Research modules behind the methodology: feature evaluation (`biomech.py`), arsenal distance work (`arsenal.py`), year-over-year stability (`stability.py`), and holdout validation (`validation.py`) |
+| `notebooks/` | The research notebooks — data exploration, similarity development, suggestion tuning, and 2026 validation |
+| `data/snapshots/` | Aggregated Parquet tables the app reads (plus `meta.json` recording the data-through date) |
+| `data/spin/` | Baseball Savant active-spin leaderboard exports (input to the snapshot build) |
+
+## Methodology notes
+
+The `analysis/` modules and `notebooks/` document how the tool's parameters were chosen — which biomechanical features carry signal, how the comp-distance and novelty thresholds were calibrated, and how suggestions were validated against pitchers who actually added a new pitch in 2026. Start with `notebooks/Data Exploration.ipynb` for the feature work and `notebooks/2026 Validation.ipynb` for the results.

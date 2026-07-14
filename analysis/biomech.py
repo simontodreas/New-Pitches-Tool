@@ -1,4 +1,4 @@
-from distances import compute_euclidean_distances, compute_mahalanobis_distances
+from src.distances import compute_euclidean_distances, compute_mahalanobis_distances
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr

@@ -1,4 +1,4 @@
-from distances import compute_euclidean_distances
+from src.distances import compute_euclidean_distances
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans

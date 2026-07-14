@@ -15,8 +15,8 @@ import plotly.graph_objects as go
 from sklearn.preprocessing import StandardScaler
 from IPython.display import display
 
-from distances import compute_euclidean_distances
-from pitch_suggestions import (
+from src.distances import compute_euclidean_distances
+from src.pitch_suggestions import (
     suggest_pitches, make_cluster_fig, _full_name, hb_in, vb_in,
     BIOMECH_FEATURES, PITCH_CHAR_FEATURES,
     _tag_novelty, _find_target, _find_biomech_comps, _collect_pitches,

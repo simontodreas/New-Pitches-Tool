@@ -4,7 +4,7 @@ Build the small summary tables the app needs and save them as Parquet.
 Run this once (and re-run whenever you refresh the underlying data) with the
 Python environment that has access to the raw Statcast/spin CSVs:
 
-    python snapshot.py
+    python -m src.snapshot        # run from the repo root
 
 After this, app.py loads the Parquet snapshot directly and no longer needs the
 raw CSVs (or pybaseball) at runtime.
@@ -14,9 +14,9 @@ import os
 
 import pandas as pd
 
-from data import build_all
+from src.data import build_all
 
-SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
+SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'snapshots')
 
 # Only the tables app.py actually consumes.
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']

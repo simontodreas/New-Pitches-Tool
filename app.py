@@ -8,10 +8,10 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 
-from pitch_suggestions import (suggest_pitches, make_cluster_fig, _full_name,
-                               BIOMECH_FEATURES, PITCH_CHAR_FEATURES, hb_in, vb_in)
+from src.pitch_suggestions import (suggest_pitches, make_cluster_fig, _full_name,
+                                   BIOMECH_FEATURES, PITCH_CHAR_FEATURES, hb_in, vb_in)
 
-SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'snapshots')
+SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
 
 st.set_page_config(page_title="MLB Pitch Loadout", layout="wide")
@@ -32,7 +32,7 @@ def load_data():
     """Prefer the prebuilt Parquet snapshot; fall back to building from CSVs."""
     if all(os.path.exists(os.path.join(SNAPSHOT_DIR, f'{k}.parquet')) for k in SNAPSHOT_KEYS):
         return {k: pd.read_parquet(os.path.join(SNAPSHOT_DIR, f'{k}.parquet')) for k in SNAPSHOT_KEYS}
-    from data import build_all  # heavy path: only imported if the snapshot is missing
+    from src.data import build_all  # heavy path: only imported if the snapshot is missing
     data = build_all(live=False)
     return {k: data[k] for k in SNAPSHOT_KEYS}
 

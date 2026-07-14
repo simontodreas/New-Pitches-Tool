@@ -12,7 +12,9 @@ STATCAST_PATHS = {
     'statcast_26': '/Users/kids/Desktop/Sports Projects/Pitcher Similarity/2026_statcast.csv',
 }
 
-SPIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Spin Files/')
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SPIN_DIR = os.path.join(_REPO_ROOT, 'data', 'spin/')
 
 SPIN_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
