@@ -1,6 +1,6 @@
 # MLB Pitch Loadout
 
-**Try the app: (https://mlbpitchloadout.streamlit.app/)**
+**Try the app: https://mlbpitchloadout.streamlit.app/**
 
 The goal of MLB Pitch Loadout is to provide MLB pitchers with reasonable suggestions for new pitches. The approach to this centers on identifying other pitchers with similar mechanics and selecting pitches they throw that our target pitcher does not. The theory is simple: two pitchers with a similar pitching process should have similar results, specifically, a similar arsenal.
 
