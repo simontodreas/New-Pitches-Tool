@@ -119,6 +119,29 @@ def load_spin_data(spin_dir=None):
 
 # ── Cleaning & Feature Construction ──────────────────────────────────────────
 
+def canonicalize_player_names(df):
+    """
+    Ensure each pitcher has a single player_name: the one from their most
+    recent appearance. Handles name changes across seasons
+    (e.g. Lou Trevino -> Lou Trevino III).
+
+    Parameters:
+        df : statcast DataFrame with 'pitcher' and 'player_name' columns
+    Returns:
+        DataFrame with player_name made consistent per pitcher (copy)
+    """
+    df = df.copy()
+    order_col = 'game_date' if 'game_date' in df.columns else 'game_year'
+    latest_names = (
+        df.dropna(subset=['player_name'])
+          .sort_values(order_col)
+          .groupby('pitcher')['player_name']
+          .last()
+    )
+    df['player_name'] = df['pitcher'].map(latest_names)
+    return df
+
+
 def clean_statcast(statcast_raw):
     """
     Apply base cleaning rules to raw Statcast data.
@@ -128,10 +151,11 @@ def clean_statcast(statcast_raw):
     Returns:
         Cleaned statcast DataFrame
     """
-    return statcast_raw[
+    statcast_clean = statcast_raw[
         (statcast_raw['release_speed'] >= 70) &
         (statcast_raw['pitch_type'] != 'PO')
     ].copy()
+    return canonicalize_player_names(statcast_clean)
 
 
 def build_pitch_type_summ(statcast_clean):

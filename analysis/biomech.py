@@ -45,13 +45,12 @@ def evaluate_biomech_features(pitcher_summ, arsenal_comp, feature_sets, min_pitc
 
         rho, pval = spearmanr(biomech['distance'], biomech['arsenal_distance'])
         results.append({
-            'features': label,
-            'spearman_rho': round(rho, 4),
+            'Features': label,
+            'Spearman_rho': round(rho, 4),
             'p_value': pval,
-            'n_pairs': len(biomech)
         })
 
-    return pd.DataFrame(results).sort_values('spearman_rho').reset_index(drop=True)
+    return pd.DataFrame(results).sort_values('Spearman_rho').reset_index(drop=True)
 
 def biomech_threshold_coverage(
     pitcher_summ,
@@ -182,6 +181,7 @@ def biomech_threshold_calibration(
         axis=1,
     )
     merged = merged.dropna(subset=['arsenal_distance'])
+    n_total_pairs = len(merged)  # all pairs with an arsenal distance, before trimming outliers
 
     if max_biomech_dist is not None:
         merged = merged[merged['distance'] <= max_biomech_dist]
@@ -198,28 +198,47 @@ def biomech_threshold_calibration(
         })
 
     bin_df = pd.DataFrame(rows)
-    print("── Biomech threshold calibration ──")
-    print(bin_df.to_string(index=False))
+    bin_df.attrs['n_total_pairs'] = n_total_pairs
     return bin_df
 
 
-def plot_threshold_calibration(bin_df):
+def plot_threshold_calibration(bin_df, threshold=1.5, total_pairs=None):
+    """
+    Two stacked panels sharing a biomech-distance x-axis:
+      top    - median arsenal distance per biomech-distance bin
+      bottom - CDF of pitcher pairs over biomech distance (cumulative share of
+               pairs within each distance, built from the per-bin counts)
+    A dashed line marks the chosen `threshold`.
+
+    The CDF is normalized over *all* pairs, including any dropped by
+    `max_biomech_dist`: the total is read from `bin_df.attrs['n_total_pairs']`
+    (set by `biomech_threshold_calibration`), or supplied via `total_pairs`,
+    falling back to the in-frame count. When the frame was trimmed the curve
+    ends below 1.0 - that gap is the share of far-outlier pairs left off the axis.
+    """
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
 
-    ax1.plot(bin_df['biomech_bin_mid'], bin_df['mean_arsenal'],
-             color='steelblue', lw=2, marker='o', ms=4, label='Mean')
+    # Top: median arsenal distance per biomech-distance bin
     ax1.plot(bin_df['biomech_bin_mid'], bin_df['median_arsenal'],
-             color='steelblue', lw=1.5, ls='--', marker='o', ms=3, alpha=0.6,
-             label='Median')
-    ax1.set_ylabel('Arsenal distance')
-    ax1.legend(fontsize=9)
+             color='steelblue', lw=2, marker='o', ms=4)
+    ax1.set_ylabel('Median arsenal distance')
     ax1.set_title('Arsenal distance vs. biomechanical distance bin')
 
-    ax2.bar(bin_df['biomech_bin_mid'], bin_df['n_pairs'],
-            width=(bin_df['biomech_bin_mid'].iloc[1] - bin_df['biomech_bin_mid'].iloc[0]) * 0.85,
-            color='steelblue', alpha=0.5)
-    ax2.set_ylabel('Number of pairs')
+    # Bottom: CDF of pairs over biomech distance, normalized over ALL pairs
+    total = (total_pairs if total_pairs is not None
+             else bin_df.attrs.get('n_total_pairs', bin_df['n_pairs'].sum()))
+    cdf = bin_df['n_pairs'].cumsum() / total
+    ax2.plot(bin_df['biomech_bin_mid'], cdf,
+             color='steelblue', lw=2, marker='o', ms=4)
+    ax2.set_ylabel('Cumulative share of pairs')
     ax2.set_xlabel('Biomechanical distance (bin midpoint)')
+    ax2.set_ylim(0, 1.02)
+
+    # Threshold marker on both panels
+    for ax in (ax1, ax2):
+        ax.axvline(threshold, color='firebrick', lw=1.5, ls='--', zorder=1)
+    ax1.text(threshold, ax1.get_ylim()[1], f' threshold = {threshold}',
+             color='firebrick', fontsize=9, va='top', ha='left')
 
     plt.tight_layout()
     plt.show()
