@@ -7,14 +7,18 @@ from scipy import linalg
 
 def compute_mahalanobis_distances(df, features, label_cols, min_pitches=None):
     """
-    Compute pairwise Mahalanobis distances between pitch types.
+    Compute pairwise Mahalanobis distances between rows (e.g., pitch types or pitchers).
+    Rows with missing labels or features are dropped.
+
     Parameters:
         df          : DataFrame with label columns and numeric feature columns
         features    : list of feature columns to use
         label_cols  : list of columns to use as labels in the output
-        min_pitches : minimum number of pitches to be considered
+        min_pitches : if given, keep only rows where df['n'] >= min_pitches
+                      (requires an 'n' pitch-count column)
     Returns:
-        Long-form DataFrame with label columns suffixed with '1' and '2', plus a distance column
+        Long-form DataFrame with label columns suffixed with '1' and '2', plus a distance column;
+        one row per unordered pair, sorted ascending by distance
     """
     if isinstance(min_pitches, int):
         df = df[df['n'] >= min_pitches]
@@ -38,19 +42,22 @@ def compute_mahalanobis_distances(df, features, label_cols, min_pitches=None):
 
 def compute_euclidean_distances(df, features, label_cols, min_pitches=None, include_features=False):
     """
-    Compute pairwise standardized Euclidean distances.
+    Compute pairwise standardized Euclidean distances between rows (e.g., pitch types or pitchers).
     Features are z-scored internally before computing distances.
-    
+    Rows with missing labels or features are dropped.
+
     Parameters:
         df          : DataFrame with label columns and numeric feature columns
         features    : list of feature columns to use (standardized internally)
         label_cols  : list of columns to use as labels in the output
-        min_pitches : minimum number of pitches to be considered
-        include_features : if True, append scaled feature values for each pitcher
+        min_pitches : if given, keep only rows where df['n'] >= min_pitches
+                      (requires an 'n' pitch-count column)
+        include_features : if True, append scaled feature values for each row
                            in the pair as additional columns (e.g., extension1, extension2)
     Returns:
         Long-form DataFrame with label columns suffixed with '1' and '2', plus a distance column,
-        and optionally scaled feature columns suffixed with '1' and '2'
+        and optionally scaled feature columns suffixed with '1' and '2';
+        one row per unordered pair, sorted ascending by distance
     """
     if isinstance(min_pitches, int):
         df = df[df['n'] >= min_pitches]

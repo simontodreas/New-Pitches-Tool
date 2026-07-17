@@ -4,27 +4,35 @@ from scipy.optimize import linear_sum_assignment
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
-from sklearn.metrics import silhouette_samples
 
-# Constants
-PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
+# The canonical feature list lives in src.pitch_suggestions; import rather than
+# redefine so these analyses can't drift from the app.
+from src.pitch_suggestions import PITCH_CHAR_FEATURES
 
 # Arsenal distance functions
 
 def compare_all_arsenals(pitch_distances, penalty_pctile):
     """
-    Compute pairwise arsenal distances for all pitcher pairs.
+    Compute pairwise arsenal distances for all pitcher-years.
+
+    Arsenal distance is an optimal assignment (Hungarian algorithm) between the two
+    arsenals' pitches: matched costs are averaged over the larger arsenal's size, and
+    unmatched pitches — plus any pair missing from pitch_distances, e.g. dropped
+    upstream by a min_pitches filter — cost the penalty. Identity is
+    player_name + game_year (names are not unique ids).
 
     Parameters:
-        pitch_distances : long-form DataFrame output from compute_mahalanobis_distances() or 
+        pitch_distances : long-form DataFrame output from compute_mahalanobis_distances() or
                           compute_euclidean_distances() with label_cols=['player_name', 'game_year', 'pitch_type']
-        penalty_pctile  : default penalty when the pitchers have different size arsenals
+        penalty_pctile  : percentile (0-100) of the observed pitch distances to use
+                          as the cost for unmatched/missing pitch pairs
 
     Returns:
-        Long-form DataFrame with columns pitcher1, pitcher2, arsenal_distance
+        Long-form DataFrame with columns player_name1, game_year1, player_name2,
+        game_year2, arsenal_distance, sorted ascending by arsenal_distance
     """
     unmatched_penalty = np.percentile(pitch_distances["distance"], penalty_pctile)
-    print(unmatched_penalty)
+    print(f"Unmatched-pitch penalty (p{penalty_pctile} of pitch distances): {unmatched_penalty:.3f}")
 
     # Build a lookup dict: (pitcher1, pitch_type1, pitcher2, pitch_type2) -> distance
     # Store both directions so we don't need to flip later
@@ -74,9 +82,15 @@ def compare_all_arsenals(pitch_distances, penalty_pctile):
 
 def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATURES, min_pitches=20, global_scaler=None):
     """
-    For each pitcher-year combination, compute the average (and percentiles) of 
+    For each pitcher-year combination, compute the average (and percentiles) of
     the closest distance from each pitch to any other pitch in their arsenal.
     Gives a natural scale for novelty_distance_threshold.
+
+    Pass the pipeline's scaler as global_scaler for distances comparable to
+    novelty_distance_threshold; the default (None) z-scores each arsenal against
+    itself, which measures relative arsenal spread on a different scale. Pitch
+    types need n >= min_pitches, and arsenals left with fewer than 2 pitch types
+    are skipped. Also prints a describe() summary across all pitcher-years.
     """
     pitch_type_clean = pitch_type_summ[pitch_type_summ['n'] >= min_pitches]
 
@@ -120,47 +134,6 @@ def arsenal_internal_distances(pitch_type_summ, pitch_features=PITCH_CHAR_FEATUR
     
     print("── Arsenal internal distances (across all pitcher-years) ──")
     print(df[['mean_min_dist', 'min_min_dist', 'p25_min_dist', 'p50_min_dist', 
-              'p75_min_dist', 'p90_min_dist']].describe().round(3).to_string())
+              'p75_min_dist', 'p90_min_dist']].describe().to_string())
     
-    return df
-
-
-def real_arsenal_silhouette_scores(statcast_clean, min_pitches=20, min_arsenal_size=3):
-    """
-    For each pitcher-year with >= min_arsenal_size pitch types, compute
-    per-cluster silhouette scores using pitch-level data, treating each
-    pitch_type as a cluster label.
-    """
-    rows = []
-
-    eligible = (
-        statcast_clean
-        .dropna(subset=PITCH_CHAR_FEATURES + ['pitch_type'])
-        .groupby(['player_name', 'game_year', 'pitch_type'])
-        .filter(lambda x: len(x) >= min_pitches)
-    )
-
-    grouped = eligible.groupby(['player_name', 'game_year'])
-
-    for (name, year), arsenal in grouped:
-        pitch_types = arsenal['pitch_type'].unique()
-        if len(pitch_types) < min_arsenal_size:
-            continue
-
-        X = StandardScaler().fit_transform(arsenal[PITCH_CHAR_FEATURES].values)
-        labels = arsenal['pitch_type'].values
-        scores = silhouette_samples(X, labels)
-
-        for pt in pitch_types:
-            mask = labels == pt
-            rows.append({
-                'player_name': name,
-                'game_year':   year,
-                'pitch_type':  pt,
-                'sil_score':   scores[mask].mean(),
-            })
-
-    df = pd.DataFrame(rows)
-    print("── Real arsenal silhouette scores ──")
-    print(df['sil_score'].describe(percentiles=[.05, .10, .25, .50]).round(3).to_string())
     return df

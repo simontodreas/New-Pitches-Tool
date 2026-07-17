@@ -80,8 +80,7 @@ def load_statcast(live=False, paths=None, start_dt='2025-01-01', end_dt='2026-12
 
 def download_spin_files(years=None, spin_dir=None):
     """
-    Download active-spin leaderboard CSVs from Baseball Savant into spin_dir,
-    replacing the manual export step. Existing files are overwritten.
+    Download active-spin leaderboard CSVs from Baseball Savant into spin_dir. Existing files are overwritten.
 
     Parameters:
         years    : list of years to fetch (defaults to SPIN_YEARS)
@@ -121,9 +120,7 @@ def load_spin_data(spin_dir=None):
 
 def canonicalize_player_names(df):
     """
-    Ensure each pitcher has a single player_name: the one from their most
-    recent appearance. Handles name changes across seasons
-    (e.g. Lou Trevino -> Lou Trevino III).
+    Ensure each pitcher has a single player_name. Handles name changes across seasons (e.g. Lou Trevino -> Lou Trevino III).
 
     Parameters:
         df : statcast DataFrame with 'pitcher' and 'player_name' columns
@@ -234,7 +231,7 @@ def fetch_player_heights(mlbam_ids):
     return pd.DataFrame(records)
 
 
-def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join, include_heights=False):
+def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join):
     """
     Aggregate to pitcher level and merge in pitch characteristics and spin data.
 
@@ -242,7 +239,6 @@ def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join, include_he
         statcast_clean   : cleaned statcast DataFrame
         pitch_type_summ  : output of build_pitch_type_summ()
         spin_df_join     : output of build_spin_features()
-        include_heights  : if True, fetches and merges player heights (makes API calls)
     Returns:
         pitcher_summ DataFrame
     """
@@ -283,10 +279,6 @@ def build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join, include_he
         spin_df_join, left_on=['pitcher', 'game_year'], right_on=['pitcher', 'year'], how='inner' # Changed to inner join to ensure we only keep pitchers with spin data
     ).drop(columns='year')
 
-    if include_heights:
-        height_key   = fetch_player_heights(statcast_clean['pitcher'].drop_duplicates().tolist())
-        pitcher_summ = pitcher_summ.merge(height_key, on='pitcher', how='left')
-
     return pitcher_summ
 
 
@@ -308,14 +300,12 @@ def build_pitch_type_views(pitch_type_summ):
 
 def build_all(live=False, paths=None, spin_dir=None, include_heights=False):
     """
-    Run the full data preparation pipeline and return all DataFrames needed
-    by downstream modules.
+    Run the full data preparation pipeline and return all DataFrames needed by downstream modules.
 
     Parameters:
         live            : if True, pull Statcast live; if False, load from CSVs
         paths           : dict of local CSV paths (used when live=False)
         spin_dir        : path to spin CSV folder
-        include_heights : if True, fetch player heights from MLB API
     Returns:
         dict with keys:
             statcast_clean, pitch_type_summ,
@@ -327,8 +317,7 @@ def build_all(live=False, paths=None, spin_dir=None, include_heights=False):
     pitch_type_summ = build_pitch_type_summ(statcast_clean)
     spin_raw        = load_spin_data(spin_dir=spin_dir)
     spin_df_join    = build_spin_features(spin_raw)
-    pitcher_summ    = build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join,
-                                         include_heights=include_heights)
+    pitcher_summ    = build_pitcher_summ(statcast_clean, pitch_type_summ, spin_df_join)
 
     pitcher_summ_r = pitcher_summ[pitcher_summ['p_throws'] == 'R'].copy()
     pitcher_summ_l = pitcher_summ[pitcher_summ['p_throws'] == 'L'].copy()

@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 def stability_analysis(
     statcast_df,
@@ -9,32 +8,37 @@ def stability_analysis(
     n_replicates=50,
     n_pitchers=50,
     group_by_pitch_type=False,
-    random_state=42,
+    random_state=2004,
 ):
     """
     For each feature, compute stability across sample sizes by bootstrapping
-    pitch-level data and measuring the sampling SD of estimates across replicates.
+    pitch-level data and measuring the SD of the estimate across replicates. 
+    The SD of replicate means is the standard-error estimate, so raw_df's 
+    sampling_sd and stability_df's *_se columns are the same quantity. Gives 
+    a natural scale for min_pitches: estimates have stabilized at the sample 
+    size where the SE curves flatten.
 
     Parameters
     ----------
-    statcast_df          : pitch-level DataFrame (statcast_25_clean)
+    statcast_df          : pitch-level DataFrame (e.g. statcast_clean_25)
     features             : list of feature names to test
-    sample_sizes         : list of ints; defaults to [10, 25, 50, 75, 100, 150, 200]
+    sample_sizes         : list of ints; defaults to [5, 10, 15, 20, 25, 30]
     n_replicates         : bootstrap replicates per sample size
     n_pitchers           : how many groups to sample for the analysis;
                            only groups with >= max(sample_sizes) pitches are eligible
     group_by_pitch_type  : if True, group by (player_name, pitch_type) instead of
                            player_name alone; use for pitch-characteristic features
-    random_state         : for reproducibility
+    random_state         : seeds group selection and the replicate draws
 
     Returns
     -------
     stability_df : aggregated long-format DataFrame with columns
                    [sample_size, feature, mean_se, p25_se, p50_se, p75_se]
-    raw_df       : one row per (group, sample_size, feature, replicate-summary)
+    raw_df       : one row per (group, sample_size, feature) with columns
+                   [group, sample_size, feature, sampling_sd, mean_est]
     """
     if sample_sizes is None:
-        sample_sizes = [10, 25, 50, 75, 100, 150, 200]
+        sample_sizes = [5,10,15,20,25,30]
 
     min_pitches = max(sample_sizes)
     rng         = np.random.default_rng(random_state)
@@ -66,7 +70,7 @@ def stability_analysis(
 
             replicate_vals = {f: [] for f in features}
             for _ in range(n_replicates):
-                subset = group_data.sample(n=n, replace=False, random_state=None)
+                subset = group_data.sample(n=n, replace=True, random_state=rng)
                 for feature in features:
                     vals = subset[feature].dropna()
                     if len(vals) > 0:

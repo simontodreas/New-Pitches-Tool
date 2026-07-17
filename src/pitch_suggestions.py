@@ -1,3 +1,9 @@
+"""Pitch suggestion pipeline: find a target pitcher's biomechanical comps,
+collect the comps' pitches, tag the ones novel vs. the target's arsenal,
+cluster the novel pitches, and aggregate each cluster into a suggested pitch.
+`suggest_pitches` runs the whole pipeline; `make_cluster_fig` renders it.
+"""
+
 from src.distances import compute_euclidean_distances
 import numpy as np
 import pandas as pd
@@ -12,19 +18,23 @@ import plotly.graph_objects as go
 BIOMECH_FEATURES    = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
 PITCH_CHAR_FEATURES = ['release_speed', 'pfx_x', 'pfx_z']
 
+# Deployed pipeline parameters — the single source of truth. The suggest_pitches
+# defaults, the app, and the validation notebook all read these, so they can't drift.
+PARAMS = dict(min_pitches=20, biomech_distance_threshold=1.5,
+              novelty_distance_threshold=1.2, min_comp_usage_pct=0.01)
+
 # Pitch-break display helpers. Statcast pfx_x/pfx_z are in feet from the catcher's
 # (batter's) perspective. Pitch plots show break in inches from the pitcher's
 # perspective, so horizontal break is scaled to inches and sign-flipped, while
 # vertical break is only scaled to inches.
-FT_TO_IN = 12.0
 
 def hb_in(pfx_x):
     """Horizontal break in inches, from the pitcher's perspective."""
-    return -pfx_x * FT_TO_IN
+    return -pfx_x * 12
 
 def vb_in(pfx_z):
     """Induced vertical break in inches."""
-    return pfx_z * FT_TO_IN
+    return pfx_z * 12
 
 PITCH_FULL_NAMES = {
     'FF': 'Four-Seam Fastball',
@@ -285,24 +295,52 @@ def suggest_pitches(
     target_pitcher_id,
     pitcher_summ,
     pitch_type_summ,
-    biomech_distance_threshold=1.5,
-    novelty_distance_threshold=1.2,
-    min_comp_usage_pct=0.01,
-    min_pitches=20,
+    biomech_distance_threshold=PARAMS['biomech_distance_threshold'],
+    novelty_distance_threshold=PARAMS['novelty_distance_threshold'],
+    min_comp_usage_pct=PARAMS['min_comp_usage_pct'],
+    min_pitches=PARAMS['min_pitches'],
     biomech_features=BIOMECH_FEATURES,
     pitch_features=PITCH_CHAR_FEATURES,
     **kwargs,  # forwarded to _cluster_novel
 ):
-    """`target_pitcher_id` is the `pitcher` id (not the player name)."""
+    """Suggest pitches for a target pitcher from biomechanically similar comps.
+
+    Parameters:
+        target_pitcher_id : the `pitcher` id (not the player name); the most
+                            recent season in pitcher_summ anchors the suggestion
+        pitcher_summ      : per pitcher-season biomech summary frame
+        pitch_type_summ   : per pitcher-season-pitch-type summary frame
+        biomech_distance_threshold : max standardized-Euclidean distance (in
+                            z-scored biomech_features space) to qualify as a comp
+        novelty_distance_threshold : min standardized-Euclidean distance (in
+                            z-scored pitch_features space) from a comp pitch to
+                            every target pitch to count as novel
+        min_comp_usage_pct : minimum share of a comp's arsenal a pitch needs to count as evidence
+                             (fraction, not percent)
+        min_pitches       : minimum pitch count for pitchers and comp pitches
+        kwargs            : forwarded to _cluster_novel (`floor`, `mask` — see
+                            _trim_cluster_outliers)
+
+    Returns a dict:
+        status             : 'ok', or where the pipeline stopped — 'pitcher_not_found',
+                             'no_comps', 'no_comp_pitches', 'no_novel_pitches'
+                             (includes too-few-to-cluster case: fewer than 4 novel pitches)
+        target_info        : the target's pitcher_summ row
+        comps              : biomech comps (comp_pitcher, comp_year, distance)
+        novel_comp_pitches : the novel comp pitches — clustered when status is 'ok',
+                             unclustered on 'no_novel_pitches'
+        suggestions        : one row per cluster of novel comp pitches
+        target_pitches     : the target's pitch_type_summ rows
+    """
     target_row, target_year = _find_target(pitcher_summ, target_pitcher_id)
     if target_row is None:
         return {
-            'status':         'pitcher_not_found',
-            'target_info':    None,
-            'comps':          pd.DataFrame(),
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': pd.DataFrame(),
+            'status':             'pitcher_not_found',
+            'target_info':        None,
+            'comps':              pd.DataFrame(),
+            'novel_comp_pitches': pd.DataFrame(),
+            'suggestions':        pd.DataFrame(),
+            'target_pitches':     pd.DataFrame(),
         }
 
     target_dists = _find_biomech_comps(
@@ -311,12 +349,12 @@ def suggest_pitches(
     )
     if target_dists.empty:
         return {
-            'status':         'no_comps',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': pd.DataFrame(),
+            'status':             'no_comps',
+            'target_info':        target_row,
+            'comps':              target_dists,
+            'novel_comp_pitches': pd.DataFrame(),
+            'suggestions':        pd.DataFrame(),
+            'target_pitches':     pd.DataFrame(),
         }
 
     target_pitches, comp_pitches = _collect_pitches(
@@ -325,12 +363,12 @@ def suggest_pitches(
     )
     if comp_pitches.empty:
         return {
-            'status':         'no_comp_pitches',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   pd.DataFrame(),
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
+            'status':             'no_comp_pitches',
+            'target_info':        target_row,
+            'comps':              target_dists,
+            'novel_comp_pitches': pd.DataFrame(),
+            'suggestions':        pd.DataFrame(),
+            'target_pitches':     target_pitches,
         }
 
     global_scaler = StandardScaler().fit(
@@ -342,33 +380,33 @@ def suggest_pitches(
     )
     if len(novel) < 4:
         return {
-            'status':         'no_novel_pitches',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   novel,
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
+            'status':             'no_novel_pitches',
+            'target_info':        target_row,
+            'comps':              target_dists,
+            'novel_comp_pitches': novel,
+            'suggestions':        pd.DataFrame(),
+            'target_pitches':     target_pitches,
         }
 
     novel = _cluster_novel(novel, global_scaler, pitch_features, **kwargs)
     if novel.empty:
         return {
-            'status':         'no_novel_pitches',
-            'target_info':    target_row,
-            'comps':          target_dists,
-            'comp_pitches':   novel,
-            'suggestions':    pd.DataFrame(),
-            'target_pitches': target_pitches,
+            'status':             'no_novel_pitches',
+            'target_info':        target_row,
+            'comps':              target_dists,
+            'novel_comp_pitches': novel,
+            'suggestions':        pd.DataFrame(),
+            'target_pitches':     target_pitches,
         }
 
     suggestions = _build_suggestions(novel, target_dists)
     return {
-        'status':         'ok',
-        'target_info':    target_row,
-        'comps':          target_dists,
-        'comp_pitches':   novel,
-        'suggestions':    suggestions,
-        'target_pitches': target_pitches,
+        'status':             'ok',
+        'target_info':        target_row,
+        'comps':              target_dists,
+        'novel_comp_pitches': novel,
+        'suggestions':        suggestions,
+        'target_pitches':     target_pitches,
     }
 
 
@@ -406,7 +444,7 @@ def make_cluster_fig(result, is_righty, vmin=None, vmax=None, show_existing=True
     vmin/vmax fix the velocity color band (the app passes a league-wide band so
     colors compare across pitchers); left as None they span this result's pitches.
     """
-    comp_pitches = result.get('comp_pitches')
+    comp_pitches = result.get('novel_comp_pitches')
     if comp_pitches is None or 'cluster_label' not in comp_pitches.columns:
         # No-suggestion statuses (no novel pitches / too few to cluster) still
         # render the plot — existing pitches only.

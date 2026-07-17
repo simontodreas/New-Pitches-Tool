@@ -9,7 +9,8 @@ from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 
 from src.pitch_suggestions import (suggest_pitches, make_cluster_fig, _full_name,
-                                   BIOMECH_FEATURES, PITCH_CHAR_FEATURES, hb_in, vb_in)
+                                   BIOMECH_FEATURES, PITCH_CHAR_FEATURES, PARAMS,
+                                   hb_in, vb_in)
 
 SNAPSHOT_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'snapshots')
 SNAPSHOT_KEYS = ['pitcher_summ_r', 'pitcher_summ_l', 'pitch_type_r', 'pitch_type_l']
@@ -175,10 +176,12 @@ with yr_col:
     season = st.selectbox("Season", avail_seasons, index=len(avail_seasons) - 1)
 
 # ── Analysis parameters (fixed) ───────────────────────────────────────────────
-biomech_thr  = 1.5   # max biomechanical distance to qualify as a comp
-novelty_thr  = 1.2   # min pitch-char distance to count as novel vs. target
-min_usage    = 0.01  # minimum usage share a comp pitch must have
-min_pitches  = 20    # minimum pitch count to include a pitcher
+# Canonical values live in src.pitch_suggestions.PARAMS, shared with the
+# validation pipeline so the app and analyses can't drift.
+biomech_thr  = PARAMS['biomech_distance_threshold']  # max biomechanical distance to qualify as a comp
+novelty_thr  = PARAMS['novelty_distance_threshold']  # min pitch-char distance to count as novel vs. target
+min_usage    = PARAMS['min_comp_usage_pct']          # minimum usage share a comp pitch must have
+min_pitches  = PARAMS['min_pitches']                 # minimum pitch count to include a pitcher
 
 # Global percentile scales for displaying the raw distances as 0-100 scores.
 biomech_ref, pitch_ref = distance_percentile_refs(min_pitches)
@@ -199,7 +202,7 @@ STATUS_MESSAGES = {
 }
 
 if status != 'ok':
-    _n_novel = len(result.get('comp_pitches', []))
+    _n_novel = len(result.get('novel_comp_pitches', []))
     if status == 'no_novel_pitches' and _n_novel > 0:
         # too-few-to-cluster case: novel pitches exist but suggestions need >= 4
         st.warning(
@@ -317,7 +320,7 @@ current_rows = pd.DataFrame({
     'MPH':                         target['release_speed'].values,
     'Horizontal Break (in)':       hb_in(target['pfx_x'].values),
     'Induced Vertical Break (in)': vb_in(target['pfx_z'].values),
-    '# Comparison Pitches':        np.nan,
+    '# Comparison Pitchers':        np.nan,
 })
 
 sugg = result['suggestions']
@@ -331,14 +334,14 @@ else:
         'MPH':                         sugg['wavg_release_speed'].values,
         'Horizontal Break (in)':       hb_in(sugg['wavg_pfx_x'].values),
         'Induced Vertical Break (in)': vb_in(sugg['wavg_pfx_z'].values),
-        '# Comparison Pitches':        sugg['n_comps'].values.astype(float),
+        '# Comparison Pitchers':        sugg['n_comps'].values.astype(float),
     })
 
 current_rows['_is_sugg'] = False
 sugg_rows['_is_sugg']    = True
 combined = (
     pd.concat([current_rows, sugg_rows], ignore_index=True)
-    .sort_values(['Current Usage', '# Comparison Pitches'], ascending=[False, False], na_position='last')
+    .sort_values(['Current Usage', '# Comparison Pitchers'], ascending=[False, False], na_position='last')
     .reset_index(drop=True)
 )
 sugg_mask = combined['_is_sugg'].tolist()
@@ -346,7 +349,7 @@ combined = combined.drop(columns='_is_sugg')
 
 # st.dataframe renders null cells as "None" regardless of Styler na_rep, so the
 # NA text has to be baked in as a string before the column reaches the grid.
-combined['# Comparison Pitches'] = combined['# Comparison Pitches'].apply(
+combined['# Comparison Pitchers'] = combined['# Comparison Pitchers'].apply(
     lambda v: 'NA' if pd.isna(v) else f'{v:.0f}'
 )
 
@@ -383,7 +386,7 @@ for _pt in (plot_event.get("selection", {}).get("points", []) if plot_event else
     if _cd and len(_cd) >= 3:
         selected_row_ids.append(int(_cd[2]))
 
-_comp_pitches_indexed = result['comp_pitches'].reset_index(drop=True)
+_comp_pitches_indexed = result['novel_comp_pitches'].reset_index(drop=True)
 selected_pitchers = set(_comp_pitches_indexed.loc[selected_row_ids, 'player_name']) if selected_row_ids else set()
 
 SELECT_HL = 'background-color: #fff2a8'  # highlight for plot-selected rows
@@ -468,7 +471,7 @@ st.dataframe(
 )
 
 st.subheader("Novel Comparable Pitches")
-cp = result['comp_pitches'].reset_index(drop=True)
+cp = result['novel_comp_pitches'].reset_index(drop=True)
 display_cols = ['player_name', 'game_year', 'pitch_type',
                 'usage_pct', 'release_speed', 'pfx_x', 'pfx_z',
                 'cluster_label']

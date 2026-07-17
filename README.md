@@ -35,8 +35,8 @@ The app reads only the prebuilt Parquet snapshots in `data/snapshots/`
 |---|---|
 | `app.py` | The Streamlit app (entrypoint) |
 | `src/` | Code behind the app: similarity + suggestion pipeline (`pitch_suggestions.py`, `distances.py`) and the data build (`data.py`, `snapshot.py`) |
-| `analysis/` | Research modules behind the methodology: feature evaluation (`biomech.py`), arsenal distance work (`arsenal.py`), year-over-year stability (`stability.py`), and holdout validation (`validation.py`) |
-| `notebooks/` | The research notebooks — data exploration, similarity development, suggestion tuning, and 2026 validation |
+| `analysis/` | Research modules behind the methodology: feature evaluation (`biomech.py`), arsenal distance work (`arsenal.py`), feature stability by sample size (`stability.py`), and holdout validation (`validation.py`) |
+| `notebooks/` | The research notebooks — data exploration and 2026 validation |
 | `data/snapshots/` | Aggregated Parquet tables the app reads (plus `meta.json` recording the data-through date) |
 | `data/spin/` | Baseball Savant active-spin leaderboard exports (input to the snapshot build) |
 

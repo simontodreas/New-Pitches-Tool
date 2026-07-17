@@ -11,9 +11,7 @@ raw CSVs (or pybaseball) at runtime.
 """
 import json
 import os
-
 import pandas as pd
-
 from src.data import build_all
 
 SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'snapshots')

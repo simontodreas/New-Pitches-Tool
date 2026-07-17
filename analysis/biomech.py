@@ -1,27 +1,34 @@
-from src.distances import compute_euclidean_distances, compute_mahalanobis_distances
+from src.distances import compute_euclidean_distances
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr
 import matplotlib.pyplot as plt
 
+# The canonical feature list lives in src.pitch_suggestions; import rather than
+# redefine so these analyses can't drift from the app.
+from src.pitch_suggestions import BIOMECH_FEATURES
 
-# Constants
-BIOMECH_FEATURES = ['release_extension', 'arm_angle', 'max_velo', 'active_spin_fastball']
 
-
-def evaluate_biomech_features(pitcher_summ, arsenal_comp, feature_sets, min_pitches=100, distance_fn=compute_euclidean_distances):
+def evaluate_biomech_features(pitcher_summ, arsenal_comp, feature_sets, min_pitches=20, 
+                              distance_fn=compute_euclidean_distances):
     """
     For each candidate feature set, compute biomechanical distances and correlate
     with arsenal distances. Returns a summary DataFrame ranked by Spearman correlation.
-    
+
+    Expects single-season inputs: distances and the arsenal join use player_name
+    alone, so a multi-year pitcher_summ would pair pitchers with themselves
+    across years.
+
     Parameters:
-        pitcher_summ  : pitcher-level summary DataFrame
+        pitcher_summ  : single-season pitcher-level summary DataFrame
         arsenal_comp  : arsenal distance DataFrame from compare_all_arsenals()
         feature_sets  : dict of {label: [feature columns]}
         min_pitches   : minimum pitches filter
-    
+        distance_fn   : compute_euclidean_distances or compute_mahalanobis_distances
+
     Returns:
-        DataFrame with feature set label, Spearman rho, p-value, and n pairs
+        DataFrame with columns Features, Spearman_rho, p_value, sorted ascending
+        by Spearman_rho (strongest feature set last)
     """
     arsenal_both = pd.concat([
         arsenal_comp.rename(columns={'player_name1': 'p1', 'player_name2': 'p2'}),
@@ -58,7 +65,17 @@ def biomech_threshold_coverage(
     min_pitches=100,
     biomech_features=BIOMECH_FEATURES,
 ):
+    """
+    For each pitcher (anchored on their most recent qualifying year), count the
+    comps within each candidate biomech distance threshold and summarize coverage:
+    how many comps a threshold leaves the typical pitcher, and what share of
+    pitchers it strands with zero (pct_zero) or fewer than 5 (pct_lt5) comps.
+    Comp pitcher-years are deduplicated to the closest year per comp, mirroring
+    suggest_pitches.
 
+    Prints the summary table and returns it: one row per threshold with columns
+    threshold, mean_comps, p10/p25/p50/p75_comps, pct_zero, pct_lt5.
+    """
     biomech_dist = compute_euclidean_distances(
         pitcher_summ,
         features=biomech_features,
@@ -154,6 +171,9 @@ def biomech_threshold_calibration(
                    mean_arsenal     – mean arsenal distance in that bin
                    median_arsenal   – median arsenal distance in that bin
                    n_pairs          – number of pairs in the bin
+                 bin_df.attrs['n_total_pairs'] holds the pair count before the
+                 max_biomech_dist trim; plot_threshold_calibration reads it to
+                 normalize its CDF over all pairs.
     """
     biomech_dist = compute_euclidean_distances(
         pitcher_summ,
